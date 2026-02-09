@@ -6,6 +6,8 @@
 
 #include <memory>
 
+#include <aria2_c_api.h>
+
 namespace flutter_aria2 {
 
 class FlutterAria2Plugin : public flutter::Plugin {
@@ -24,6 +26,22 @@ class FlutterAria2Plugin : public flutter::Plugin {
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue> &method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
+ private:
+  aria2_session_t* session_ = nullptr;
+  bool library_initialized_ = false;
+
+  // Method channel for sending events back to Dart.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
+
+  // Singleton instance pointer (used by the event callback).
+  static FlutterAria2Plugin* instance_;
+
+  // aria2 download event callback (C-compatible static function).
+  static int DownloadEventCallback(aria2_session_t* session,
+                                   aria2_download_event_t event,
+                                   aria2_gid_t gid,
+                                   void* user_data);
 };
 
 }  // namespace flutter_aria2
