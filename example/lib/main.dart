@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_aria2/flutter_aria2.dart';
@@ -252,6 +253,39 @@ class _DownloadPageState extends State<DownloadPage> {
     } catch (e) {
       _addLog('addUri 异常: $e');
       _showSnackBar('添加失败: $e');
+    }
+  }
+
+  Future<void> _addTorrentDownload() async {
+    if (!_sessionActive) {
+      _showSnackBar('请先启动会话');
+      return;
+    }
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['torrent'],
+        dialogTitle: '选择种子文件',
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final filePath = result.files.single.path;
+      if (filePath == null) return;
+
+      final fileName = result.files.single.name;
+      _addLog('选中种子文件: $filePath');
+
+      final gid = await _aria2.addTorrent(filePath);
+      _addLog('addTorrent => GID=$gid');
+
+      setState(() {
+        _tasks.add(DownloadTask(gid: gid, uri: '[Torrent] $fileName'));
+      });
+      _showSnackBar('种子下载已添加');
+    } catch (e) {
+      _addLog('addTorrent 异常: $e');
+      _showSnackBar('添加种子失败: $e');
     }
   }
 
@@ -523,39 +557,50 @@ class _DownloadPageState extends State<DownloadPage> {
 
   // ── 添加下载 ──
   Widget _buildAddDownloadSection(ColorScheme cs) {
-    return Row(
+    return Column(
       children: [
-        Expanded(
-          child: TextField(
-            controller: _urlController,
-            decoration: InputDecoration(
-              hintText: '输入下载链接 (HTTP/HTTPS/FTP/Magnet)',
-              prefixIcon: const Icon(Icons.link),
-              border: const OutlineInputBorder(),
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 12,
-              ),
-              suffixIcon: IconButton(
-                icon: const Icon(Icons.content_paste),
-                tooltip: '从剪贴板粘贴',
-                onPressed: () async {
-                  final data = await Clipboard.getData(Clipboard.kTextPlain);
-                  if (data?.text != null) {
-                    _urlController.text = data!.text!;
-                  }
-                },
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _urlController,
+                decoration: InputDecoration(
+                  hintText: '输入下载链接 (HTTP/HTTPS/FTP/Magnet)',
+                  prefixIcon: const Icon(Icons.link),
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 12,
+                  ),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.content_paste),
+                    tooltip: '从剪贴板粘贴',
+                    onPressed: () async {
+                      final data =
+                          await Clipboard.getData(Clipboard.kTextPlain);
+                      if (data?.text != null) {
+                        _urlController.text = data!.text!;
+                      }
+                    },
+                  ),
+                ),
+                onSubmitted: (_) => _addDownload(),
               ),
             ),
-            onSubmitted: (_) => _addDownload(),
-          ),
-        ),
-        const SizedBox(width: 8),
-        FilledButton.icon(
-          onPressed: _addDownload,
-          icon: const Icon(Icons.add),
-          label: const Text('下载'),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              onPressed: _addDownload,
+              icon: const Icon(Icons.add),
+              label: const Text('下载'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _addTorrentDownload,
+              icon: const Icon(Icons.file_open, size: 18),
+              label: const Text('种子文件'),
+            ),
+          ],
         ),
       ],
     );
