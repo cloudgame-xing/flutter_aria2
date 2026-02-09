@@ -4,6 +4,7 @@
 #include <flutter/method_channel.h>
 #include <flutter/plugin_registrar_windows.h>
 
+#include <atomic>
 #include <memory>
 
 #include <aria2_c_api.h>
@@ -30,6 +31,13 @@ class FlutterAria2Plugin : public flutter::Plugin {
  private:
   aria2_session_t* session_ = nullptr;
   bool library_initialized_ = false;
+
+  // Guards against concurrent aria2_run calls; true while a background
+  // thread is executing aria2_run(session, ARIA2_RUN_ONCE).
+  std::atomic<bool> run_in_progress_{false};
+
+  // Block until a pending background aria2_run finishes.
+  void WaitForPendingRun();
 
   // Method channel for sending events back to Dart.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;

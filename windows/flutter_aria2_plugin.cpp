@@ -9,10 +9,12 @@
 
 #include <aria2_c_api.h>
 
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace flutter_aria2 {
@@ -155,6 +157,12 @@ void FlutterAria2Plugin::RegisterWithRegistrar(
 FlutterAria2Plugin::FlutterAria2Plugin() {}
 
 FlutterAria2Plugin::~FlutterAria2Plugin() {
+  // Signal aria2 to stop so any in-flight aria2_run returns quickly.
+  if (session_ && library_initialized_) {
+    aria2_shutdown(session_, /*force=*/1);
+  }
+  WaitForPendingRun();
+
   if (session_) {
     aria2_session_final(session_);
     session_ = nullptr;
@@ -165,6 +173,12 @@ FlutterAria2Plugin::~FlutterAria2Plugin() {
   }
   if (instance_ == this) {
     instance_ = nullptr;
+  }
+}
+
+void FlutterAria2Plugin::WaitForPendingRun() {
+  while (run_in_progress_.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 }
 
@@ -222,6 +236,7 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "libraryDeinit") {
+    WaitForPendingRun();
     if (session_) {
       aria2_session_final(session_);
       session_ = nullptr;
@@ -273,6 +288,7 @@ void FlutterAria2Plugin::HandleMethodCall(
       result->Error("NO_SESSION", "No active session");
       return;
     }
+    WaitForPendingRun();
     int ret = aria2_session_final(session_);
     session_ = nullptr;
     result->Success(EV(ret));
@@ -280,7 +296,7 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   // ════════════════════════════════════════════════════════════════
-  //  Run (always RUN_ONCE from the platform thread)
+  //  Run (ARIA2_RUN_ONCE on a background thread to avoid blocking UI)
   // ════════════════════════════════════════════════════════════════
 
   if (method == "run") {
@@ -288,8 +304,31 @@ void FlutterAria2Plugin::HandleMethodCall(
       result->Error("NO_SESSION", "No active session");
       return;
     }
-    int ret = aria2_run(session_, ARIA2_RUN_ONCE);
-    result->Success(EV(ret));
+    // If a previous run is still in progress, skip this call.
+    if (run_in_progress_.load()) {
+      result->Success(EV(1));  // 1 = still active
+      return;
+    }
+
+    run_in_progress_.store(true);
+
+    // Transfer result ownership to the background thread.
+    // Flutter Windows engine allows calling MethodResult from any thread.
+    auto* result_ptr = result.release();
+    auto* session    = session_;
+
+    std::thread([this, result_ptr, session]() {
+      int ret = 0;
+      try {
+        ret = aria2_run(session, ARIA2_RUN_ONCE);
+      } catch (...) {
+        ret = -1;
+      }
+      run_in_progress_.store(false);
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+          res(result_ptr);
+      res->Success(EV(ret));
+    }).detach();
     return;
   }
 

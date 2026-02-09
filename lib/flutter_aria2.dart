@@ -383,7 +383,9 @@ class Aria2DownloadInfo {
 /// await aria2.libraryDeinit();
 /// ```
 class FlutterAria2 {
-  Timer? _runTimer;
+  /// 用于取消当前运行中的事件循环。每次 [startRunLoop]/[stopRunLoop]
+  /// 都会递增，旧循环检测到 generation 不匹配后自动退出。
+  int _runLoopGeneration = 0;
 
   // ──────── 事件流 ────────
 
@@ -444,18 +446,30 @@ class FlutterAria2 {
 
   /// 启动自动事件循环，定期调用 [run]。
   ///
-  /// [interval] 调用间隔，默认 500 毫秒。
+  /// 内部采用顺序执行：等待上一次 [run] 完成后，再延迟 [interval]
+  /// 再发起下一次，从而避免并发调用和阻塞 UI。
+  ///
+  /// [interval] 两次 [run] 之间的间隔，默认 500 毫秒。
   void startRunLoop({Duration interval = const Duration(milliseconds: 500)}) {
     stopRunLoop();
-    _runTimer = Timer.periodic(interval, (_) async {
-      await run();
-    });
+    _runLoopGeneration++;
+    _runLoopBody(interval, _runLoopGeneration);
+  }
+
+  /// 顺序事件循环体（fire-and-forget async）。
+  Future<void> _runLoopBody(Duration interval, int generation) async {
+    while (_runLoopGeneration == generation) {
+      try {
+        await run();
+      } catch (_) {}
+      // 等待间隔后再进入下一轮
+      await Future.delayed(interval);
+    }
   }
 
   /// 停止自动事件循环。
   void stopRunLoop() {
-    _runTimer?.cancel();
-    _runTimer = null;
+    _runLoopGeneration++;
   }
 
   // ──────── 添加下载 ────────

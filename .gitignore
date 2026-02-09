@@ -37,3 +37,4 @@ migrate_working_dir/
 /macos/aria2lib/
 /android/aria2lib/
 /ios/aria2lib/
+example/downloads/
