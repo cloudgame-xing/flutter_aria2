@@ -10,6 +10,8 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
+#include <aria2_c_api.h>
+
 #include <memory>
 #include <sstream>
 
@@ -50,6 +52,9 @@ void FlutterAria2Plugin::HandleMethodCall(
     } else if (IsWindows7OrGreater()) {
       version_stream << "7";
     }
+
+    auto ret =aria2_library_init();
+    version_stream << " aria2_library_init: " << ret;
     result->Success(flutter::EncodableValue(version_stream.str()));
   } else {
     result->NotImplemented();
