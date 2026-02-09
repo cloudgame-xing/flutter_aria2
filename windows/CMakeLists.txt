@@ -8,19 +8,9 @@ cmake_minimum_required(VERSION 3.14)
 set(PROJECT_NAME "flutter_aria2")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
-# Sync deps during configure; fail on error.
-set(PLUGIN_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/..")
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-  set(SYNC_PLATFORM "win")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  set(SYNC_PLATFORM "linux")
-else()
-  message(FATAL_ERROR "Unsupported platform for sync_deps: ${CMAKE_SYSTEM_NAME}")
-endif()
-
 execute_process(
-  COMMAND dart run build_tool/sync_deps.dart ${SYNC_PLATFORM}
-  WORKING_DIRECTORY "${PLUGIN_ROOT_DIR}"
+  COMMAND dart.bat run build_tool/sync_deps.dart windows
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
   RESULT_VARIABLE SYNC_DEPS_RESULT
 )
 if(NOT SYNC_DEPS_RESULT EQUAL 0)
@@ -67,11 +57,25 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
+add_library(aria2_c_api SHARED IMPORTED GLOBAL)
+set_target_properties(aria2_c_api PROPERTIES
+  MAP_IMPORTED_CONFIG_PROFILE         Release
+  MAP_IMPORTED_CONFIG_RELWITHDEBINFO  Release
+  MAP_IMPORTED_CONFIG_MINSIZEREL      Release
+  INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/include"
+  IMPORTED_IMPLIB_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Debug/lib/libaria2_c_api.dll.a"
+  IMPORTED_IMPLIB_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/lib/libaria2_c_api.dll.a"
+  IMPORTED_LOCATION_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Debug/bin/libaria2_c_api.dll"
+  IMPORTED_LOCATION_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/bin/libaria2_c_api.dll"
+)
+
+target_link_libraries(${PLUGIN_NAME} PRIVATE aria2_c_api)
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
 set(flutter_aria2_bundled_libraries
-  ""
+  $<TARGET_FILE:aria2_c_api>
   PARENT_SCOPE
 )
 
@@ -105,12 +109,13 @@ add_executable(${TEST_RUNNER}
 )
 apply_standard_settings(${TEST_RUNNER})
 target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(${TEST_RUNNER} PRIVATE flutter_wrapper_plugin)
+target_link_libraries(${TEST_RUNNER} PRIVATE flutter_wrapper_plugin aria2_c_api)
 target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
 # flutter_wrapper_plugin has link dependencies on the Flutter DLL.
 add_custom_command(TARGET ${TEST_RUNNER} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
   "${FLUTTER_LIBRARY}" $<TARGET_FILE_DIR:${TEST_RUNNER}>
+  $<TARGET_FILE:aria2_c_api> $<TARGET_FILE_DIR:${TEST_RUNNER}>
 )
 
 # Enable automatic test discovery.

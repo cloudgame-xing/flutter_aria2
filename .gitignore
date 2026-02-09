@@ -31,3 +31,9 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 /build/
 /coverage/
+
+/windows/aria2lib/
+/linux/aria2lib/
+/macos/aria2lib/
+/android/aria2lib/
+/ios/aria2lib/
