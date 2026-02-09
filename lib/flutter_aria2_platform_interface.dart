@@ -52,6 +52,16 @@ abstract class FlutterAria2Platform extends PlatformInterface {
     throw UnimplementedError('run() has not been implemented.');
   }
 
+  /// 在原生后台线程启动持续事件循环 (ARIA2_RUN_DEFAULT)。
+  Future<void> startNativeRunLoop() {
+    throw UnimplementedError('startNativeRunLoop() has not been implemented.');
+  }
+
+  /// 停止原生后台事件循环。
+  Future<void> stopNativeRunLoop() {
+    throw UnimplementedError('stopNativeRunLoop() has not been implemented.');
+  }
+
   // ──────── 添加下载 ────────
 
   Future<String> addUri(

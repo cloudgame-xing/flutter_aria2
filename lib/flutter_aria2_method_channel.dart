@@ -84,6 +84,16 @@ class MethodChannelFlutterAria2 extends FlutterAria2Platform {
     return result ?? -1;
   }
 
+  @override
+  Future<void> startNativeRunLoop() async {
+    await methodChannel.invokeMethod<void>('startRunLoop');
+  }
+
+  @override
+  Future<void> stopNativeRunLoop() async {
+    await methodChannel.invokeMethod<void>('stopRunLoop');
+  }
+
   // ──────── 添加下载 ────────
 
   @override

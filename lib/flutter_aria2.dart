@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'flutter_aria2_platform_interface.dart';
 
 // ──────────────────────────── Enums ────────────────────────────
@@ -383,10 +381,6 @@ class Aria2DownloadInfo {
 /// await aria2.libraryDeinit();
 /// ```
 class FlutterAria2 {
-  /// 用于取消当前运行中的事件循环。每次 [startRunLoop]/[stopRunLoop]
-  /// 都会递增，旧循环检测到 generation 不匹配后自动退出。
-  int _runLoopGeneration = 0;
-
   // ──────── 事件流 ────────
 
   /// 下载事件流。
@@ -444,32 +438,18 @@ class FlutterAria2 {
     return FlutterAria2Platform.instance.run();
   }
 
-  /// 启动自动事件循环，定期调用 [run]。
+  /// 在原生后台线程启动持续事件循环。
   ///
-  /// 内部采用顺序执行：等待上一次 [run] 完成后，再延迟 [interval]
-  /// 再发起下一次，从而避免并发调用和阻塞 UI。
-  ///
-  /// [interval] 两次 [run] 之间的间隔，默认 500 毫秒。
-  void startRunLoop({Duration interval = const Duration(milliseconds: 500)}) {
-    stopRunLoop();
-    _runLoopGeneration++;
-    _runLoopBody(interval, _runLoopGeneration);
+  /// 内部使用 `aria2_run(session, ARIA2_RUN_DEFAULT)`，通过高效的 I/O
+  /// 多路复用持续处理网络事件，下载速度与原生 aria2 一致。
+  /// 调用后立即返回，不会阻塞 UI。
+  Future<void> startRunLoop() {
+    return FlutterAria2Platform.instance.startNativeRunLoop();
   }
 
-  /// 顺序事件循环体（fire-and-forget async）。
-  Future<void> _runLoopBody(Duration interval, int generation) async {
-    while (_runLoopGeneration == generation) {
-      try {
-        await run();
-      } catch (_) {}
-      // 等待间隔后再进入下一轮
-      await Future.delayed(interval);
-    }
-  }
-
-  /// 停止自动事件循环。
-  void stopRunLoop() {
-    _runLoopGeneration++;
+  /// 停止后台事件循环。
+  Future<void> stopRunLoop() {
+    return FlutterAria2Platform.instance.stopNativeRunLoop();
   }
 
   // ──────── 添加下载 ────────
@@ -678,7 +658,7 @@ class FlutterAria2 {
   }
 
   /// 释放资源，停止事件循环。
-  void dispose() {
-    stopRunLoop();
+  Future<void> dispose() {
+    return stopRunLoop();
   }
 }

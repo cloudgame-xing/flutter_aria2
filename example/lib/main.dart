@@ -149,6 +149,11 @@ class _DownloadPageState extends State<DownloadPage> {
       await _aria2.sessionNew(
         options: {
           if (dir.isNotEmpty) 'dir': dir,
+          // ── 性能选项 ──
+          'max-connection-per-server': '16', // 每个服务器最大连接数（默认1）
+          'split': '16',                     // 将文件分为N段并行下载
+          'min-split-size': '1M',            // 最小分段大小
+          'max-concurrent-downloads': '5',   // 最大同时下载任务数
         },
         keepRunning: true,
       );
@@ -157,8 +162,8 @@ class _DownloadPageState extends State<DownloadPage> {
       // 监听事件
       _eventSub = _aria2.onDownloadEvent.listen(_onDownloadEvent);
 
-      // 启动事件循环和定时刷新
-      _aria2.startRunLoop(interval: const Duration(milliseconds: 500));
+      // 启动原生后台事件循环（高效 I/O 多路复用）和定时刷新
+      await _aria2.startRunLoop();
       _refreshTimer = Timer.periodic(
         const Duration(seconds: 1),
         (_) => _refreshStatus(),
@@ -175,15 +180,15 @@ class _DownloadPageState extends State<DownloadPage> {
   Future<void> _stopSession() async {
     _refreshTimer?.cancel();
     _refreshTimer = null;
-    _aria2.stopRunLoop();
     _eventSub?.cancel();
     _eventSub = null;
 
+    // stopRunLoop 内部会 shutdown + join 后台线程
     try {
-      await _aria2.shutdown(force: true);
-      _addLog('shutdown 成功');
+      await _aria2.stopRunLoop();
+      _addLog('stopRunLoop 成功');
     } catch (e) {
-      _addLog('shutdown 异常: $e');
+      _addLog('stopRunLoop 异常: $e');
     }
 
     try {

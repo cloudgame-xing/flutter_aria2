@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <memory>
+#include <thread>
 
 #include <aria2_c_api.h>
 
@@ -32,11 +33,17 @@ class FlutterAria2Plugin : public flutter::Plugin {
   aria2_session_t* session_ = nullptr;
   bool library_initialized_ = false;
 
-  // Guards against concurrent aria2_run calls; true while a background
-  // thread is executing aria2_run(session, ARIA2_RUN_ONCE).
+  // ── Background run loop (ARIA2_RUN_DEFAULT) ──
+  std::thread run_thread_;
+  std::atomic<bool> run_loop_active_{false};
+
+  // Guards against concurrent one-shot aria2_run(ONCE) calls.
   std::atomic<bool> run_in_progress_{false};
 
-  // Block until a pending background aria2_run finishes.
+  // Stop the background run loop (if active) and block until it exits.
+  void StopRunLoop();
+
+  // Block until a pending one-shot aria2_run finishes.
   void WaitForPendingRun();
 
   // Method channel for sending events back to Dart.

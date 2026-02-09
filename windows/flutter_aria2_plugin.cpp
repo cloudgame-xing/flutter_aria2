@@ -157,10 +157,7 @@ void FlutterAria2Plugin::RegisterWithRegistrar(
 FlutterAria2Plugin::FlutterAria2Plugin() {}
 
 FlutterAria2Plugin::~FlutterAria2Plugin() {
-  // Signal aria2 to stop so any in-flight aria2_run returns quickly.
-  if (session_ && library_initialized_) {
-    aria2_shutdown(session_, /*force=*/1);
-  }
+  StopRunLoop();
   WaitForPendingRun();
 
   if (session_) {
@@ -173,6 +170,22 @@ FlutterAria2Plugin::~FlutterAria2Plugin() {
   }
   if (instance_ == this) {
     instance_ = nullptr;
+  }
+}
+
+void FlutterAria2Plugin::StopRunLoop() {
+  if (!run_loop_active_.load()) return;
+
+  run_loop_active_.store(false);
+
+  // Signal aria2 to stop so aria2_run(DEFAULT) returns.
+  if (session_) {
+    aria2_shutdown(session_, /*force=*/1);
+  }
+
+  // Wait for the background thread to finish.
+  if (run_thread_.joinable()) {
+    run_thread_.join();
   }
 }
 
@@ -236,6 +249,7 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "libraryDeinit") {
+    StopRunLoop();
     WaitForPendingRun();
     if (session_) {
       aria2_session_final(session_);
@@ -288,6 +302,7 @@ void FlutterAria2Plugin::HandleMethodCall(
       result->Error("NO_SESSION", "No active session");
       return;
     }
+    StopRunLoop();
     WaitForPendingRun();
     int ret = aria2_session_final(session_);
     session_ = nullptr;
@@ -329,6 +344,47 @@ void FlutterAria2Plugin::HandleMethodCall(
           res(result_ptr);
       res->Success(EV(ret));
     }).detach();
+    return;
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  //  Continuous run loop (ARIA2_RUN_DEFAULT on background thread)
+  // ════════════════════════════════════════════════════════════════
+
+  if (method == "startRunLoop") {
+    if (!session_) {
+      result->Error("NO_SESSION", "No active session");
+      return;
+    }
+    if (run_loop_active_.load()) {
+      result->Success(EV());  // Already running
+      return;
+    }
+
+    run_loop_active_.store(true);
+    auto* session = session_;
+
+    // Join any previous thread first.
+    if (run_thread_.joinable()) {
+      run_thread_.join();
+    }
+
+    run_thread_ = std::thread([this, session]() {
+      // aria2_run(DEFAULT) blocks and continuously processes I/O
+      // using efficient multiplexing (select/epoll). It returns when
+      // aria2_shutdown is called or (if keep_running is false) when
+      // all downloads complete.
+      aria2_run(session, ARIA2_RUN_DEFAULT);
+      run_loop_active_.store(false);
+    });
+
+    result->Success(EV());
+    return;
+  }
+
+  if (method == "stopRunLoop") {
+    StopRunLoop();
+    result->Success(EV());
     return;
   }
 
