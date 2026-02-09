@@ -6,6 +6,37 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_aria2/flutter_aria2.dart';
 
+/// BT Tracker 列表，自动附加到所有 BT 下载任务。
+const kBtTrackers = [
+  // ── UDP trackers ──
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.tracker.cl:1337/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+  'udp://open.demonii.com:1337/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://tracker.moeking.me:6969/announce',
+  'udp://tracker1.bt.moack.co.kr:80/announce',
+  'udp://tracker.tiny-vps.com:6969/announce',
+  'udp://tracker.theoks.net:6969/announce',
+  'udp://tracker.bittor.pw:1337/announce',
+  'udp://tracker.dump.cl:6969/announce',
+  'udp://tracker.auber.moe:6969/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://retracker01-msk-virt.corbina.net:80/announce',
+  'udp://p4p.arenabg.com:1337/announce',
+  // ── HTTP/HTTPS trackers ──
+  'https://tracker.tamersunion.org:443/announce',
+  'https://tracker.lilithraws.org:443/announce',
+  'http://tracker.mywaifu.best:6969/announce',
+  'http://tracker.bt4g.com:2095/announce',
+  'https://tracker.loligirl.cn:443/announce',
+  'http://bvarf.tracker.sh:2086/announce',
+  // ── WebSocket trackers ──
+  'wss://tracker.openwebtorrent.com',
+];
+
 void main() {
   runApp(const MyApp());
 }
@@ -155,6 +186,11 @@ class _DownloadPageState extends State<DownloadPage> {
           'split': '16',                     // 将文件分为N段并行下载
           'min-split-size': '1M',            // 最小分段大小
           'max-concurrent-downloads': '5',   // 最大同时下载任务数
+          // ── BT 选项 ──
+          'bt-tracker': kBtTrackers.join(','), // 自动附加 tracker
+          'enable-dht': 'true',               // 启用 DHT
+          'enable-peer-exchange': 'true',     // 启用 PEX 节点交换
+          'seed-time': '0',                   // 下载完成后不做种
         },
         keepRunning: true,
       );
