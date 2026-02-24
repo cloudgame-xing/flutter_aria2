@@ -7,6 +7,15 @@ cmake_minimum_required(VERSION 3.10)
 set(PROJECT_NAME "flutter_aria2")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
+execute_process(
+  COMMAND dart run build_tool/sync_deps.dart linux x64 0.1.1
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  RESULT_VARIABLE SYNC_DEPS_RESULT
+)
+if(NOT SYNC_DEPS_RESULT EQUAL 0)
+  message(FATAL_ERROR "sync_deps.dart failed with code ${SYNC_DEPS_RESULT}")
+endif()
+
 # This value is used when generating builds using this plugin, so it must
 # not be changed.
 set(PLUGIN_NAME "flutter_aria2_plugin")
@@ -41,11 +50,23 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
+add_library(aria2_c_api SHARED IMPORTED GLOBAL)
+set_target_properties(aria2_c_api PROPERTIES
+  MAP_IMPORTED_CONFIG_PROFILE         Release
+  MAP_IMPORTED_CONFIG_RELWITHDEBINFO  Release
+  MAP_IMPORTED_CONFIG_MINSIZEREL      Release
+  INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/include"
+  IMPORTED_LOCATION_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Debug/lib/libaria2_c_api.so"
+  IMPORTED_LOCATION_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/lib/libaria2_c_api.so"
+)
+
+target_link_libraries(${PLUGIN_NAME} PRIVATE aria2_c_api)
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
 set(flutter_aria2_bundled_libraries
-  ""
+  $<TARGET_FILE:aria2_c_api>
   PARENT_SCOPE
 )
 
@@ -85,6 +106,7 @@ target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(${TEST_RUNNER} PRIVATE flutter)
 target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::GTK)
 target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
+target_link_libraries(${TEST_RUNNER} PRIVATE aria2_c_api)
 
 # Enable automatic test discovery.
 include(GoogleTest)

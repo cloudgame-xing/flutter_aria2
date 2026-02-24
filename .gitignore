@@ -38,3 +38,5 @@ migrate_working_dir/
 /android/aria2lib/
 /ios/aria2lib/
 example/downloads/
+.cache/
+compile_commands.json
