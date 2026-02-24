@@ -119,11 +119,14 @@ class DownloadPage extends StatefulWidget {
 }
 
 class _DownloadPageState extends State<DownloadPage> {
+  static const String _caBundleAssetPath = 'assets/certs/cacert.pem';
+
   final FlutterAria2 _aria2 = FlutterAria2();
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _dirController = TextEditingController();
   final List<DownloadTask> _tasks = [];
   final List<String> _logs = [];
+  String? _caCertificatePath;
 
   bool _initialized = false;
   bool _sessionActive = false;
@@ -178,14 +181,21 @@ class _DownloadPageState extends State<DownloadPage> {
         final d = Directory(dir);
         if (!d.existsSync()) d.createSync(recursive: true);
       }
+      String? caCertificatePath;
+      if (Platform.isIOS) {
+        caCertificatePath = await _ensureCaCertificatePath();
+      }
 
       await _aria2.sessionNew(
         options: {
           if (dir.isNotEmpty) 'dir': dir,
+          if (Platform.isIOS && caCertificatePath != null)
+            'ca-certificate': caCertificatePath,
           // 避免同名文件/断点文件导致创建或截断失败。
           'allow-overwrite': 'true',
           'auto-file-renaming': 'true',
           'continue': 'true',
+          if (Platform.isIOS) 'check-certificate': 'true',
           // ── 性能选项 ──
           'max-connection-per-server': '16', // 每个服务器最大连接数（默认1）
           'split': '16',                     // 将文件分为N段并行下载
@@ -199,7 +209,11 @@ class _DownloadPageState extends State<DownloadPage> {
         },
         keepRunning: true,
       );
-      _addLog('sessionNew 成功, dir=$dir');
+      final caLog =
+          (Platform.isIOS && caCertificatePath != null)
+              ? ', ca=$caCertificatePath'
+              : '';
+      _addLog('sessionNew 成功, dir=$dir$caLog');
 
       // 监听事件
       _eventSub = _aria2.onDownloadEvent.listen(_onDownloadEvent);
@@ -396,6 +410,30 @@ class _DownloadPageState extends State<DownloadPage> {
   }
 
   // ─────────── 工具方法 ───────────
+
+  Future<String> _ensureCaCertificatePath() async {
+    if (_caCertificatePath != null && File(_caCertificatePath!).existsSync()) {
+      return _caCertificatePath!;
+    }
+
+    final certDir = Directory(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}flutter_aria2_certs',
+    );
+    if (!certDir.existsSync()) {
+      certDir.createSync(recursive: true);
+    }
+
+    final certFile = File(
+      '${certDir.path}${Platform.pathSeparator}cacert.pem',
+    );
+    final certAsset = await rootBundle.load(_caBundleAssetPath);
+    await certFile.writeAsBytes(
+      certAsset.buffer.asUint8List(),
+      flush: true,
+    );
+    _caCertificatePath = certFile.path;
+    return certFile.path;
+  }
 
   void _addLog(String msg) {
     final now = DateTime.now();
