@@ -1,22 +1,23 @@
 import 'dart:io';
 
 Future<void> main(List<String> args) async {
-  if (args.length != 1) {
+  if (args.length != 3) {
     stderr.writeln(
-      'Usage: dart run build_tool/sync_deps.dart <windows|linux|macos|android|ios>',
+      'Usage: dart run build_tool/sync_deps.dart <windows|linux|macos|android|ios> <x64|arm64> <version>',
     );
     exit(64);
   }
 
-  final platform = args.first;
-  final version = '0.1.1';
-  await syncDeps(platform, version);
+  final platform = args[0];
+  final arch = args[1];
+  final version = args[2];
+  await syncDeps(platform, arch, version);
 }
 
-Future<void> syncDeps(String platform, String version) async {
+Future<void> syncDeps(String platform, String arch, String version) async {
   // 脚本所在目录: build_tool/，上层目录即项目根目录
   final scriptDir = File(Platform.script.toFilePath()).parent;
-  final projectRoot = scriptDir.parent;
+  final projectRoot = scriptDir.parent.resolveSymbolicLinksSync();
 
   // 需要检查的文件列表（相对于项目根目录）
   final requiredFiles = switch (platform) {
@@ -56,7 +57,7 @@ Future<void> syncDeps(String platform, String version) async {
   };
 
   final missingFiles = requiredFiles
-      .where((f) => !File('${projectRoot.path}/$f').existsSync())
+      .where((f) => !File('${projectRoot}/$f').existsSync())
       .toList();
 
   if (missingFiles.isEmpty) {
@@ -70,15 +71,18 @@ Future<void> syncDeps(String platform, String version) async {
   }
   print('Downloading...');
 
+  final filename = platform == 'windows'
+      ? 'aria2_c_api-win-$arch-v$version.tar.gz'
+      : 'aria2_c_api-$platform-$arch-v$version.tar.gz';
   final url =
-      'https://github.com/cloudgame-xing/aria2lib/releases/download/$version/aria2_c_api-$platform-x64-v$version.tar.gz';
-  final tarGzFile = File(
-    '${scriptDir.path}/aria2_c_api-$platform-x64-v$version.tar.gz',
-  );
-  final aria2libDir = Directory('${projectRoot.path}/$platform/aria2lib');
+      'https://github.com/cloudgame-xing/aria2lib/releases/download/v$version/$filename';
+  final tarGzFile = File('${scriptDir.path}/$filename');
+  final aria2libDir = Directory('${projectRoot}/$platform');
+  aria2libDir.createSync(recursive: true);
 
   // 使用 Dart HttpClient 下载文件
   final client = HttpClient();
+  print('Downloading from $url');
   try {
     var uri = Uri.parse(url);
     var request = await client.getUrl(uri);
@@ -95,7 +99,7 @@ Future<void> syncDeps(String platform, String version) async {
 
     if (response.statusCode != 200) {
       stderr.writeln(
-        'Failed to download: HTTP ${response.statusCode} ${response.reasonPhrase}',
+        'Failed to download: HTTP ${response.statusCode} ${response.reasonPhrase}, url: $url',
       );
       exit(1);
     }
