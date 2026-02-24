@@ -181,18 +181,21 @@ class _DownloadPageState extends State<DownloadPage> {
         final d = Directory(dir);
         if (!d.existsSync()) d.createSync(recursive: true);
       }
-      final caCertificatePath = await _ensureCaCertificatePath();
+      String? caCertificatePath;
+      if (Platform.isIOS) {
+        caCertificatePath = await _ensureCaCertificatePath();
+      }
 
       await _aria2.sessionNew(
         options: {
           if (dir.isNotEmpty) 'dir': dir,
-          'ca-certificate': caCertificatePath,
+          if (Platform.isIOS && caCertificatePath != null)
+            'ca-certificate': caCertificatePath,
           // 避免同名文件/断点文件导致创建或截断失败。
           'allow-overwrite': 'true',
           'auto-file-renaming': 'true',
           'continue': 'true',
-          // 使用内置 Mozilla CA 证书进行 HTTPS 校验。
-          'check-certificate': 'true',
+          if (Platform.isIOS) 'check-certificate': 'true',
           // ── 性能选项 ──
           'max-connection-per-server': '16', // 每个服务器最大连接数（默认1）
           'split': '16',                     // 将文件分为N段并行下载
@@ -206,7 +209,11 @@ class _DownloadPageState extends State<DownloadPage> {
         },
         keepRunning: true,
       );
-      _addLog('sessionNew 成功, dir=$dir, ca=$caCertificatePath');
+      final caLog =
+          (Platform.isIOS && caCertificatePath != null)
+              ? ', ca=$caCertificatePath'
+              : '';
+      _addLog('sessionNew 成功, dir=$dir$caLog');
 
       // 监听事件
       _eventSub = _aria2.onDownloadEvent.listen(_onDownloadEvent);
