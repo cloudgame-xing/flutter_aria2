@@ -134,8 +134,9 @@ class _DownloadPageState extends State<DownloadPage> {
   @override
   void initState() {
     super.initState();
-    // 默认下载目录
-    _dirController.text = '${Directory.current.path}${Platform.pathSeparator}downloads';
+    // macOS 沙盒下优先使用可写临时目录，避免文件创建失败（errorCode=16）。
+    _dirController.text =
+        '${Directory.systemTemp.path}${Platform.pathSeparator}flutter_aria2_downloads';
   }
 
   @override
@@ -181,6 +182,10 @@ class _DownloadPageState extends State<DownloadPage> {
       await _aria2.sessionNew(
         options: {
           if (dir.isNotEmpty) 'dir': dir,
+          // 避免同名文件/断点文件导致创建或截断失败。
+          'allow-overwrite': 'true',
+          'auto-file-renaming': 'true',
+          'continue': 'true',
           // ── 性能选项 ──
           'max-connection-per-server': '16', // 每个服务器最大连接数（默认1）
           'split': '16',                     // 将文件分为N段并行下载

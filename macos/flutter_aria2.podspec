@@ -14,7 +14,9 @@ A new Flutter plugin project.
   s.author           = { 'Your Company' => 'email@example.com' }
 
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*'
+  s.source_files     = 'Classes/**/*.{h,m,mm,swift}'
+  s.preserve_paths   = 'aria2lib/**/*'
+  s.vendored_libraries = 'aria2lib/Release/lib/libaria2_c_api.dylib'
 
   # If your plugin requires a privacy manifest, for example if it collects user
   # data, update the PrivacyInfo.xcprivacy file to describe your plugin's
@@ -25,6 +27,39 @@ A new Flutter plugin project.
   s.dependency 'FlutterMacOS'
 
   s.platform = :osx, '10.11'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
+  s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
+    'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
+    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
+    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/Release/lib"',
+    'OTHER_LDFLAGS' => '$(inherited) -laria2_c_api',
+  }
   s.swift_version = '5.0'
+
+  s.script_phase = {
+    :name => 'Sync aria2 deps',
+    :execution_position => :before_compile,
+    :shell_path => '/bin/sh',
+    :script => <<-SCRIPT
+set -euo pipefail
+
+ARCH_NAME="${ARCHS%% *}"
+if [ "${ARCH_NAME}" = "arm64" ]; then
+  ARCH_ARG="arm64"
+else
+  ARCH_ARG="x64"
+fi
+
+if command -v dart >/dev/null 2>&1; then
+  DART_BIN="dart"
+elif [ -n "${FLUTTER_ROOT:-}" ] && [ -x "${FLUTTER_ROOT}/bin/dart" ]; then
+  DART_BIN="${FLUTTER_ROOT}/bin/dart"
+else
+  echo "error: dart executable not found."
+  exit 1
+fi
+
+"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos "${ARCH_ARG}" 0.1.1
+    SCRIPT
+  }
 end
