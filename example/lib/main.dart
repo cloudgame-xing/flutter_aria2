@@ -186,6 +186,8 @@ class _DownloadPageState extends State<DownloadPage> {
           'allow-overwrite': 'true',
           'auto-file-renaming': 'true',
           'continue': 'true',
+          // iOS 临时排障：先关闭 TLS 证书校验，后续建议改为配置 ca-certificate。
+          'check-certificate': 'false',
           // ── 性能选项 ──
           'max-connection-per-server': '16', // 每个服务器最大连接数（默认1）
           'split': '16',                     // 将文件分为N段并行下载
