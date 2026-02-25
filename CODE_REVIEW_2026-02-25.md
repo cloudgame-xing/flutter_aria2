@@ -76,15 +76,20 @@
   - 统一状态机语义（`Init -> SessionReady -> Running -> Stopped -> Finalized`）；
   - 封装成跨平台共享的生命周期管理组件。
 
-### B3（中）Dart 错误处理语义不一致
+### B3（中）Dart 错误处理语义不一致 ✅ 已处理
 
 - 证据：`lib/flutter_aria2_method_channel.dart`
   - 大量 `result ?? -1` / `result ?? ''`（静默降级）
   - 部分接口直接 `result!`（可能触发崩溃）
 - 影响：调用方难以建立稳定错误处理策略。
-- 建议：
-  - 统一以异常语义返回（将 `PlatformException` 包装为 `Aria2Exception`）；
-  - 除非协议明确允许 `null`，否则避免默认值吞错。
+- **已做修改**：
+  - 在 `lib/flutter_aria2.dart` 中新增 [Aria2Exception]，包装 [PlatformException]，暴露 `code`、`message` 及可选的 `platformException`，便于调用方统一 catch 并区分错误码（如 NO_SESSION、NOT_INITIALIZED、ARIA2_ERROR 等）。
+  - 在 [MethodChannelFlutterAria2] 中：
+    - 使用 `_invoke<T>()` 调用原生方法，在 catch 到 [PlatformException] 时统一 rethrow 为 [Aria2Exception]；
+    - 使用 `_invokeRequired<T>()` 要求非 null 结果，若平台返回 null 则抛出 [Aria2Exception] 而非默认值；
+    - 仅当协议明确允许 null 的接口（如 [getGlobalOption]、[getDownloadOption]、[getPlatformVersion]）仍返回 `String?`/null。
+  - 移除所有 `result ?? -1`、`result ?? ''`、`result?.cast<String>() ?? []` 等静默降级，以及 `result!` 的强制解包；错误路径一律通过异常暴露。
+- 建议：调用方可通过 `try { await aria2.addUri(...); } on Aria2Exception catch (e) { switch (e.code) { case 'NO_SESSION': ... } }` 建立稳定错误处理策略。
 
 ---
 
