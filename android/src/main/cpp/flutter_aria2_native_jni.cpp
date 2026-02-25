@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include <aria2_c_api.h>
+#include "common/aria2_core.h"
 
 #include <atomic>
 #include <chrono>
@@ -21,13 +22,7 @@ jobject g_event_sink = nullptr;  // Global ref to Aria2NativeManager.
 constexpr const char* kErrorClassName =
     "me/junjie/xing/flutter_aria2/Aria2NativeException";
 
-struct Aria2State {
-  aria2_session_t* session = nullptr;
-  bool library_initialized = false;
-  std::thread run_thread;
-  std::atomic<bool> run_loop_active{false};
-  std::atomic<bool> run_in_progress{false};
-};
+struct Aria2State : public flutter_aria2::core::RuntimeState {};
 
 jfieldID GetNativeHandleFieldId(JNIEnv* env, jobject thiz) {
   jclass cls = env->GetObjectClass(thiz);
@@ -272,37 +267,6 @@ void ThrowAria2Error(JNIEnv* env, const std::string& code,
   env->DeleteLocalRef(ex);
 }
 
-void WaitForPendingRun(Aria2State* state) {
-  while (state->run_in_progress.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-}
-
-void StopRunLoop(Aria2State* state) {
-  if (!state->run_loop_active.load()) return;
-  state->run_loop_active.store(false);
-  if (state->session != nullptr) {
-    aria2_shutdown(state->session, 1);
-  }
-  if (state->run_thread.joinable()) {
-    state->run_thread.join();
-  }
-}
-
-void CleanupState(Aria2State* state) {
-  if (state == nullptr) return;
-  StopRunLoop(state);
-  WaitForPendingRun(state);
-  if (state->session != nullptr) {
-    aria2_session_final(state->session);
-    state->session = nullptr;
-  }
-  if (state->library_initialized) {
-    aria2_library_deinit();
-    state->library_initialized = false;
-  }
-}
-
 void EmitDownloadEvent(aria2_download_event_t event, const std::string& gid) {
   if (g_vm == nullptr) return;
   JNIEnv* env = nullptr;
@@ -376,21 +340,11 @@ jobject FileDataToJavaMap(JNIEnv* env, const aria2_file_data_t& file) {
 jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
                      jobject args) {
   if (method == "libraryInit") {
-    int ret = aria2_library_init();
-    if (ret == 0) state->library_initialized = true;
-    return NewInteger(env, ret);
+    return NewInteger(env, flutter_aria2::core::LibraryInit(state));
   }
 
   if (method == "libraryDeinit") {
-    StopRunLoop(state);
-    WaitForPendingRun(state);
-    if (state->session != nullptr) {
-      aria2_session_final(state->session);
-      state->session = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    state->library_initialized = false;
-    return NewInteger(env, ret);
+    return NewInteger(env, flutter_aria2::core::LibraryDeinit(state));
   }
 
   if (method == "sessionNew") {
@@ -407,14 +361,10 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     auto options = OptionsFromArgs(env, args, "options");
     bool keep_running = MapGetBool(env, args, "keepRunning", true);
 
-    aria2_session_config_t config;
-    aria2_session_config_init(&config);
-    config.keep_running = keep_running ? 1 : 0;
-    config.download_event_callback = &DownloadEventCallback;
-    config.user_data = state;
-
-    state->session = aria2_session_new(options.data(), options.count(), &config);
-    if (state->session == nullptr) {
+    const char* error = flutter_aria2::core::SessionNew(
+        state, options.data(), options.count(), keep_running,
+        &DownloadEventCallback, state);
+    if (error != nullptr) {
       ThrowAria2Error(env, "SESSION_FAILED", "aria2_session_new returned null");
       return nullptr;
     }
@@ -426,10 +376,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       ThrowAria2Error(env, "NO_SESSION", "No active session");
       return nullptr;
     }
-    StopRunLoop(state);
-    WaitForPendingRun(state);
-    int ret = aria2_session_final(state->session);
-    state->session = nullptr;
+    int ret = 0;
+    flutter_aria2::core::SessionFinal(state, &ret);
     return NewInteger(env, ret);
   }
 
@@ -438,13 +386,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       ThrowAria2Error(env, "NO_SESSION", "No active session");
       return nullptr;
     }
-    if (state->run_in_progress.load()) {
-      return NewInteger(env, 1);
-    }
-    state->run_in_progress.store(true);
-    int ret = aria2_run(state->session, ARIA2_RUN_ONCE);
-    state->run_in_progress.store(false);
-    return NewInteger(env, ret);
+    return NewInteger(env, flutter_aria2::core::RunOnce(state));
   }
 
   if (method == "startRunLoop") {
@@ -452,24 +394,12 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       ThrowAria2Error(env, "NO_SESSION", "No active session");
       return nullptr;
     }
-    if (state->run_loop_active.load()) {
-      return nullptr;
-    }
-
-    state->run_loop_active.store(true);
-    auto* session = state->session;
-    if (state->run_thread.joinable()) {
-      state->run_thread.join();
-    }
-    state->run_thread = std::thread([state, session]() {
-      aria2_run(session, ARIA2_RUN_DEFAULT);
-      state->run_loop_active.store(false);
-    });
+    flutter_aria2::core::StartRunLoop(state);
     return nullptr;
   }
 
   if (method == "stopRunLoop") {
-    StopRunLoop(state);
+    flutter_aria2::core::StopRunLoop(state);
     return nullptr;
   }
 
@@ -479,7 +409,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       return nullptr;
     }
     int force = MapGetBool(env, args, "force", false) ? 1 : 0;
-    int ret = aria2_shutdown(state->session, force);
+    int ret = 0;
+    flutter_aria2::core::Shutdown(state, force != 0, &ret);
     return NewInteger(env, ret);
   }
 
@@ -954,7 +885,7 @@ Java_me_junjie_xing_flutter_1aria2_Aria2NativeManager_nativeInit(
     JNIEnv* env, jobject thiz) {
   auto* state = GetState(env, thiz);
   if (state != nullptr) {
-    CleanupState(state);
+    flutter_aria2::core::CleanupState(state);
     delete state;
   }
   SetState(env, thiz, new Aria2State());
@@ -965,7 +896,7 @@ Java_me_junjie_xing_flutter_1aria2_Aria2NativeManager_nativeDispose(
     JNIEnv* env, jobject thiz) {
   auto* state = GetState(env, thiz);
   if (state == nullptr) return;
-  CleanupState(state);
+  flutter_aria2::core::CleanupState(state);
   delete state;
   SetState(env, thiz, nullptr);
 }

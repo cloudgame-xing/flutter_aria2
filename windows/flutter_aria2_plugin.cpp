@@ -157,42 +157,18 @@ void FlutterAria2Plugin::RegisterWithRegistrar(
 FlutterAria2Plugin::FlutterAria2Plugin() {}
 
 FlutterAria2Plugin::~FlutterAria2Plugin() {
-  StopRunLoop();
-  WaitForPendingRun();
-
-  if (session_) {
-    aria2_session_final(session_);
-    session_ = nullptr;
-  }
-  if (library_initialized_) {
-    aria2_library_deinit();
-    library_initialized_ = false;
-  }
+  flutter_aria2::core::CleanupState(&core_);
   if (instance_ == this) {
     instance_ = nullptr;
   }
 }
 
 void FlutterAria2Plugin::StopRunLoop() {
-  if (!run_loop_active_.load()) return;
-
-  run_loop_active_.store(false);
-
-  // Signal aria2 to stop so aria2_run(DEFAULT) returns.
-  if (session_) {
-    aria2_shutdown(session_, /*force=*/1);
-  }
-
-  // Wait for the background thread to finish.
-  if (run_thread_.joinable()) {
-    run_thread_.join();
-  }
+  flutter_aria2::core::StopRunLoop(&core_);
 }
 
 void FlutterAria2Plugin::WaitForPendingRun() {
-  while (run_in_progress_.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  flutter_aria2::core::WaitForPendingRun(&core_);
 }
 
 // ──────────────────────── Event callback ────────────────────────
@@ -242,21 +218,13 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "libraryInit") {
-    int ret = aria2_library_init();
-    if (ret == 0) library_initialized_ = true;
+    int ret = flutter_aria2::core::LibraryInit(&core_);
     result->Success(EV(ret));
     return;
   }
 
   if (method == "libraryDeinit") {
-    StopRunLoop();
-    WaitForPendingRun();
-    if (session_) {
-      aria2_session_final(session_);
-      session_ = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    library_initialized_ = false;
+    int ret = flutter_aria2::core::LibraryDeinit(&core_);
     result->Success(EV(ret));
     return;
   }
@@ -281,15 +249,10 @@ void FlutterAria2Plugin::HandleMethodCall(
     auto options = OptionsFromMap(a, "options");
     bool keep_running = MapGetBool(a, "keepRunning", true);
 
-    aria2_session_config_t config;
-    aria2_session_config_init(&config);
-    config.keep_running = keep_running ? 1 : 0;
-    config.download_event_callback = &FlutterAria2Plugin::DownloadEventCallback;
-    config.user_data = this;
-
-    session_ = aria2_session_new(options.data(),
-                                 options.count(), &config);
-    if (!session_) {
+    const char* error = flutter_aria2::core::SessionNew(
+        &core_, options.data(), options.count(), keep_running,
+        &FlutterAria2Plugin::DownloadEventCallback, this);
+    if (error != nullptr) {
       result->Error("SESSION_FAILED", "aria2_session_new returned null");
       return;
     }
@@ -302,10 +265,8 @@ void FlutterAria2Plugin::HandleMethodCall(
       result->Error("NO_SESSION", "No active session");
       return;
     }
-    StopRunLoop();
-    WaitForPendingRun();
-    int ret = aria2_session_final(session_);
-    session_ = nullptr;
+    int ret = 0;
+    flutter_aria2::core::SessionFinal(&core_, &ret);
     result->Success(EV(ret));
     return;
   }
@@ -361,23 +322,7 @@ void FlutterAria2Plugin::HandleMethodCall(
       return;
     }
 
-    run_loop_active_.store(true);
-    auto* session = session_;
-
-    // Join any previous thread first.
-    if (run_thread_.joinable()) {
-      run_thread_.join();
-    }
-
-    run_thread_ = std::thread([this, session]() {
-      // aria2_run(DEFAULT) blocks and continuously processes I/O
-      // using efficient multiplexing (select/epoll). It returns when
-      // aria2_shutdown is called or (if keep_running is false) when
-      // all downloads complete.
-      aria2_run(session, ARIA2_RUN_DEFAULT);
-      run_loop_active_.store(false);
-    });
-
+    flutter_aria2::core::StartRunLoop(&core_);
     result->Success(EV());
     return;
   }
@@ -399,7 +344,8 @@ void FlutterAria2Plugin::HandleMethodCall(
     }
     const auto& a = std::get<EMap>(*args);
     int force = MapGetBool(a, "force", false) ? 1 : 0;
-    int ret = aria2_shutdown(session_, force);
+    int ret = 0;
+    flutter_aria2::core::Shutdown(&core_, force != 0, &ret);
     result->Success(EV(ret));
     return;
   }

@@ -57,12 +57,14 @@ add_library(
   flutter_aria2_native
   SHARED
   src/main/cpp/flutter_aria2_native_jni.cpp
+  ../common/aria2_core.cpp
 )
 
 target_include_directories(
   flutter_aria2_native
   PRIVATE
   "${ARIA2_INCLUDE_DIR}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
 target_link_libraries(

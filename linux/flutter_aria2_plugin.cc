@@ -6,7 +6,6 @@
 #include <sys/utsname.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -15,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include "../common/aria2_core.h"
 #include "flutter_aria2_plugin_private.h"
 
 #define FLUTTER_ARIA2_PLUGIN(obj) \
@@ -152,23 +152,35 @@ FlMethodResponse* error_response(const gchar* code, const gchar* message) {
   return FL_METHOD_RESPONSE(fl_method_error_response_new(code, message, nullptr));
 }
 
+flutter_aria2::core::RuntimeState take_core_state(FlutterAria2Plugin* self) {
+  flutter_aria2::core::RuntimeState core;
+  core.session = self->session;
+  core.library_initialized = self->library_initialized;
+  core.run_thread = std::move(self->run_thread);
+  core.run_loop_active.store(self->run_loop_active.load());
+  core.run_in_progress.store(self->run_in_progress.load());
+  return core;
+}
+
+void put_core_state(FlutterAria2Plugin* self,
+                    flutter_aria2::core::RuntimeState&& core) {
+  self->session = core.session;
+  self->library_initialized = core.library_initialized;
+  self->run_thread = std::move(core.run_thread);
+  self->run_loop_active.store(core.run_loop_active.load());
+  self->run_in_progress.store(core.run_in_progress.load());
+}
+
 void wait_for_pending_run(FlutterAria2Plugin* self) {
-  while (self->run_in_progress.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  auto core = take_core_state(self);
+  flutter_aria2::core::WaitForPendingRun(&core);
+  put_core_state(self, std::move(core));
 }
 
 void stop_run_loop(FlutterAria2Plugin* self) {
-  if (!self->run_loop_active.load()) {
-    return;
-  }
-  self->run_loop_active.store(false);
-  if (self->session != nullptr) {
-    aria2_shutdown(self->session, 1);
-  }
-  if (self->run_thread.joinable()) {
-    self->run_thread.join();
-  }
+  auto core = take_core_state(self);
+  flutter_aria2::core::StopRunLoop(&core);
+  put_core_state(self, std::move(core));
 }
 
 struct EventPayload {
@@ -217,20 +229,14 @@ static void flutter_aria2_plugin_handle_method_call(
   if (strcmp(method, "getPlatformVersion") == 0) {
     response = get_platform_version();
   } else if (strcmp(method, "libraryInit") == 0) {
-    int ret = aria2_library_init();
-    if (ret == 0) {
-      self->library_initialized = TRUE;
-    }
+    auto core = take_core_state(self);
+    int ret = flutter_aria2::core::LibraryInit(&core);
+    put_core_state(self, std::move(core));
     response = success_response(fl_value_new_int(ret));
   } else if (strcmp(method, "libraryDeinit") == 0) {
-    stop_run_loop(self);
-    wait_for_pending_run(self);
-    if (self->session != nullptr) {
-      aria2_session_final(self->session);
-      self->session = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    self->library_initialized = FALSE;
+    auto core = take_core_state(self);
+    int ret = flutter_aria2::core::LibraryDeinit(&core);
+    put_core_state(self, std::move(core));
     response = success_response(fl_value_new_int(ret));
   } else if (strcmp(method, "sessionNew") == 0) {
     if (!self->library_initialized) {
@@ -242,15 +248,12 @@ static void flutter_aria2_plugin_handle_method_call(
     } else {
       KeyValHelper options = options_from_map(args, "options");
       bool keep_running = map_get_bool(args, "keepRunning", true);
-
-      aria2_session_config_t config;
-      aria2_session_config_init(&config);
-      config.keep_running = keep_running ? 1 : 0;
-      config.download_event_callback = &download_event_callback;
-      config.user_data = self;
-
-      self->session = aria2_session_new(options.data(), options.count(), &config);
-      if (self->session == nullptr) {
+      auto core = take_core_state(self);
+      const char* error = flutter_aria2::core::SessionNew(
+          &core, options.data(), options.count(), keep_running,
+          &download_event_callback, self);
+      put_core_state(self, std::move(core));
+      if (error != nullptr) {
         response =
             error_response("SESSION_FAILED", "aria2_session_new returned null");
       } else {
@@ -261,26 +264,19 @@ static void flutter_aria2_plugin_handle_method_call(
     if (self->session == nullptr) {
       response = error_response("NO_SESSION", "No active session");
     } else {
-      stop_run_loop(self);
-      wait_for_pending_run(self);
-      int ret = aria2_session_final(self->session);
-      self->session = nullptr;
+      auto core = take_core_state(self);
+      int ret = 0;
+      flutter_aria2::core::SessionFinal(&core, &ret);
+      put_core_state(self, std::move(core));
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "run") == 0) {
     if (self->session == nullptr) {
       response = error_response("NO_SESSION", "No active session");
-    } else if (self->run_in_progress.load()) {
-      response = success_response(fl_value_new_int(1));
     } else {
-      self->run_in_progress.store(true);
-      int ret = -1;
-      try {
-        ret = aria2_run(self->session, ARIA2_RUN_ONCE);
-      } catch (...) {
-        ret = -1;
-      }
-      self->run_in_progress.store(false);
+      auto core = take_core_state(self);
+      int ret = flutter_aria2::core::RunOnce(&core);
+      put_core_state(self, std::move(core));
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "startRunLoop") == 0) {
@@ -289,15 +285,9 @@ static void flutter_aria2_plugin_handle_method_call(
     } else if (self->run_loop_active.load()) {
       response = null_success_response();
     } else {
-      self->run_loop_active.store(true);
-      aria2_session_t* session = self->session;
-      if (self->run_thread.joinable()) {
-        self->run_thread.join();
-      }
-      self->run_thread = std::thread([self, session]() {
-        aria2_run(session, ARIA2_RUN_DEFAULT);
-        self->run_loop_active.store(false);
-      });
+      auto core = take_core_state(self);
+      flutter_aria2::core::StartRunLoop(&core);
+      put_core_state(self, std::move(core));
       response = null_success_response();
     }
   } else if (strcmp(method, "stopRunLoop") == 0) {
@@ -308,7 +298,10 @@ static void flutter_aria2_plugin_handle_method_call(
       response = error_response("NO_SESSION", "No active session");
     } else {
       int force = map_get_bool(args, "force", false) ? 1 : 0;
-      int ret = aria2_shutdown(self->session, force);
+      auto core = take_core_state(self);
+      int ret = 0;
+      flutter_aria2::core::Shutdown(&core, force != 0, &ret);
+      put_core_state(self, std::move(core));
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "addUri") == 0) {
@@ -798,16 +791,9 @@ FlMethodResponse* get_platform_version() {
 
 static void flutter_aria2_plugin_dispose(GObject* object) {
   auto* self = FLUTTER_ARIA2_PLUGIN(object);
-  stop_run_loop(self);
-  wait_for_pending_run(self);
-  if (self->session != nullptr) {
-    aria2_session_final(self->session);
-    self->session = nullptr;
-  }
-  if (self->library_initialized) {
-    aria2_library_deinit();
-    self->library_initialized = FALSE;
-  }
+  auto core = take_core_state(self);
+  flutter_aria2::core::CleanupState(&core);
+  put_core_state(self, std::move(core));
   if (self->channel != nullptr) {
     g_object_unref(self->channel);
     self->channel = nullptr;
