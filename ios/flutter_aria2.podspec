@@ -13,7 +13,7 @@ A new Flutter plugin project.
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Your Company' => 'email@example.com' }
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*.{h,m,mm,swift}'
+  s.source_files     = 'Classes/**/*.{h,m,mm,swift,cpp}'
   s.public_header_files = 'Classes/**/*.h'
   s.preserve_paths   = 'aria2lib/**/*'
   s.vendored_libraries = 'aria2lib/Release/lib/libaria2_c_api.dylib'
@@ -25,7 +25,7 @@ A new Flutter plugin project.
     'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
+    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
     'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/Release/lib"',
     'OTHER_LDFLAGS' => '$(inherited) -laria2_c_api',
     'LD_RUNPATH_SEARCH_PATHS' => '$(inherited) @loader_path @loader_path/Frameworks @executable_path/Frameworks',

@@ -1,4 +1,5 @@
 #include "flutter_aria2_plugin.h"
+#include "../common/aria2_helpers.h"
 
 #include <windows.h>
 #include <VersionHelpers.h>
@@ -97,14 +98,6 @@ KeyValHelper OptionsFromMap(const EMap& args, const std::string& key) {
   return kv;
 }
 
-// GID ↔ hex conversion wrapper (frees C-allocated memory).
-std::string GidToHex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result(hex ? hex : "");
-  if (hex) aria2_free(hex);
-  return result;
-}
-
 // Convert aria2_file_data_t → EncodableValue (map).
 EV FileDataToEncodable(const aria2_file_data_t& f) {
   EMap m;
@@ -157,42 +150,18 @@ void FlutterAria2Plugin::RegisterWithRegistrar(
 FlutterAria2Plugin::FlutterAria2Plugin() {}
 
 FlutterAria2Plugin::~FlutterAria2Plugin() {
-  StopRunLoop();
-  WaitForPendingRun();
-
-  if (session_) {
-    aria2_session_final(session_);
-    session_ = nullptr;
-  }
-  if (library_initialized_) {
-    aria2_library_deinit();
-    library_initialized_ = false;
-  }
+  flutter_aria2::core::CleanupState(&core_);
   if (instance_ == this) {
     instance_ = nullptr;
   }
 }
 
 void FlutterAria2Plugin::StopRunLoop() {
-  if (!run_loop_active_.load()) return;
-
-  run_loop_active_.store(false);
-
-  // Signal aria2 to stop so aria2_run(DEFAULT) returns.
-  if (session_) {
-    aria2_shutdown(session_, /*force=*/1);
-  }
-
-  // Wait for the background thread to finish.
-  if (run_thread_.joinable()) {
-    run_thread_.join();
-  }
+  flutter_aria2::core::StopRunLoop(&core_);
 }
 
 void FlutterAria2Plugin::WaitForPendingRun() {
-  while (run_in_progress_.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  flutter_aria2::core::WaitForPendingRun(&core_);
 }
 
 // ──────────────────────── Event callback ────────────────────────
@@ -205,7 +174,7 @@ int FlutterAria2Plugin::DownloadEventCallback(
   if (instance_ && instance_->channel_) {
     EMap data;
     data[EV("event")] = EV(static_cast<int32_t>(event));
-    data[EV("gid")]   = EV(GidToHex(gid));
+    data[EV("gid")] = EV(flutter_aria2::common::GidToHex(gid));
     instance_->channel_->InvokeMethod(
         "onDownloadEvent",
         std::make_unique<EV>(data));
@@ -242,21 +211,13 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "libraryInit") {
-    int ret = aria2_library_init();
-    if (ret == 0) library_initialized_ = true;
+    int ret = flutter_aria2::core::LibraryInit(&core_);
     result->Success(EV(ret));
     return;
   }
 
   if (method == "libraryDeinit") {
-    StopRunLoop();
-    WaitForPendingRun();
-    if (session_) {
-      aria2_session_final(session_);
-      session_ = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    library_initialized_ = false;
+    int ret = flutter_aria2::core::LibraryDeinit(&core_);
     result->Success(EV(ret));
     return;
   }
@@ -266,14 +227,12 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "sessionNew") {
-    if (!library_initialized_) {
-      result->Error("NOT_INITIALIZED",
-                    "Call libraryInit() before sessionNew()");
+    if (const char* err = flutter_aria2::core::RequireInitialized(&core_)) {
+      result->Error(err, "Call libraryInit() before sessionNew()");
       return;
     }
-    if (session_) {
-      result->Error("SESSION_EXISTS",
-                    "Session already exists. Call sessionFinal() first.");
+    if (const char* err = flutter_aria2::core::RequireNoSession(&core_)) {
+      result->Error(err, "Session already exists. Call sessionFinal() first.");
       return;
     }
 
@@ -281,15 +240,10 @@ void FlutterAria2Plugin::HandleMethodCall(
     auto options = OptionsFromMap(a, "options");
     bool keep_running = MapGetBool(a, "keepRunning", true);
 
-    aria2_session_config_t config;
-    aria2_session_config_init(&config);
-    config.keep_running = keep_running ? 1 : 0;
-    config.download_event_callback = &FlutterAria2Plugin::DownloadEventCallback;
-    config.user_data = this;
-
-    session_ = aria2_session_new(options.data(),
-                                 options.count(), &config);
-    if (!session_) {
+    const char* error = flutter_aria2::core::SessionNew(
+        &core_, options.data(), options.count(), keep_running,
+        &FlutterAria2Plugin::DownloadEventCallback, this);
+    if (error != nullptr) {
       result->Error("SESSION_FAILED", "aria2_session_new returned null");
       return;
     }
@@ -298,14 +252,12 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "sessionFinal") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
-    StopRunLoop();
-    WaitForPendingRun();
-    int ret = aria2_session_final(session_);
-    session_ = nullptr;
+    int ret = 0;
+    flutter_aria2::core::SessionFinal(&core_, &ret);
     result->Success(EV(ret));
     return;
   }
@@ -315,8 +267,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "run") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     // If a previous run is still in progress, skip this call.
@@ -352,8 +304,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "startRunLoop") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     if (run_loop_active_.load()) {
@@ -361,23 +313,7 @@ void FlutterAria2Plugin::HandleMethodCall(
       return;
     }
 
-    run_loop_active_.store(true);
-    auto* session = session_;
-
-    // Join any previous thread first.
-    if (run_thread_.joinable()) {
-      run_thread_.join();
-    }
-
-    run_thread_ = std::thread([this, session]() {
-      // aria2_run(DEFAULT) blocks and continuously processes I/O
-      // using efficient multiplexing (select/epoll). It returns when
-      // aria2_shutdown is called or (if keep_running is false) when
-      // all downloads complete.
-      aria2_run(session, ARIA2_RUN_DEFAULT);
-      run_loop_active_.store(false);
-    });
-
+    flutter_aria2::core::StartRunLoop(&core_);
     result->Success(EV());
     return;
   }
@@ -393,13 +329,14 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "shutdown") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
     int force = MapGetBool(a, "force", false) ? 1 : 0;
-    int ret = aria2_shutdown(session_, force);
+    int ret = 0;
+    flutter_aria2::core::Shutdown(&core_, force != 0, &ret);
     result->Success(EV(ret));
     return;
   }
@@ -409,8 +346,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "addUri") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -442,7 +379,7 @@ void FlutterAria2Plugin::HandleMethodCall(
                             options.data(), options.count(),
                             position);
     if (ret == 0) {
-      result->Success(EV(GidToHex(gid)));
+      result->Success(EV(flutter_aria2::common::GidToHex(gid)));
     } else {
       result->Error("ARIA2_ERROR",
                     "aria2_add_uri failed with code " + std::to_string(ret));
@@ -455,8 +392,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "addTorrent") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -496,7 +433,7 @@ void FlutterAria2Plugin::HandleMethodCall(
     }
 
     if (ret == 0) {
-      result->Success(EV(GidToHex(gid)));
+      result->Success(EV(flutter_aria2::common::GidToHex(gid)));
     } else {
       result->Error("ARIA2_ERROR",
                     "aria2_add_torrent failed with code " +
@@ -510,8 +447,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "addMetalink") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -528,7 +465,7 @@ void FlutterAria2Plugin::HandleMethodCall(
     if (ret == 0) {
       EList gid_list;
       for (size_t i = 0; i < gids_count; ++i) {
-        gid_list.push_back(EV(GidToHex(gids[i])));
+        gid_list.push_back(EV(flutter_aria2::common::GidToHex(gids[i])));
       }
       if (gids) aria2_free(gids);
       result->Success(EV(gid_list));
@@ -546,8 +483,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getActiveDownload") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     aria2_gid_t* gids = nullptr;
@@ -556,7 +493,7 @@ void FlutterAria2Plugin::HandleMethodCall(
     if (ret == 0) {
       EList gid_list;
       for (size_t i = 0; i < gids_count; ++i) {
-        gid_list.push_back(EV(GidToHex(gids[i])));
+        gid_list.push_back(EV(flutter_aria2::common::GidToHex(gids[i])));
       }
       if (gids) aria2_free(gids);
       result->Success(EV(gid_list));
@@ -574,8 +511,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "removeDownload") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -588,8 +525,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "pauseDownload") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -602,8 +539,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "unpauseDownload") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -619,8 +556,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "changePosition") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -639,8 +576,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "changeOption") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -658,8 +595,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getGlobalOption") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -675,8 +612,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "getGlobalOptions") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     aria2_key_val_t* opts = nullptr;
@@ -700,8 +637,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "changeGlobalOption") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -717,8 +654,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getGlobalStat") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     aria2_global_stat_t stat = aria2_get_global_stat(session_);
@@ -737,8 +674,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getDownloadInfo") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -790,15 +727,15 @@ void FlutterAria2Plugin::HandleMethodCall(
     EList followed_by;
     if (aria2_download_handle_get_followed_by(dh, &fb_gids, &fb_count) == 0) {
       for (size_t i = 0; i < fb_count; ++i) {
-        followed_by.push_back(EV(GidToHex(fb_gids[i])));
+        followed_by.push_back(EV(flutter_aria2::common::GidToHex(fb_gids[i])));
       }
       if (fb_gids) aria2_free(fb_gids);
     }
     m[EV("followedBy")] = EV(followed_by);
 
-    m[EV("following")] = EV(GidToHex(
+    m[EV("following")] = EV(flutter_aria2::common::GidToHex(
         aria2_download_handle_get_following(dh)));
-    m[EV("belongsTo")] = EV(GidToHex(
+    m[EV("belongsTo")] = EV(flutter_aria2::common::GidToHex(
         aria2_download_handle_get_belongs_to(dh)));
 
     char* dir = aria2_download_handle_get_dir(dh);
@@ -817,8 +754,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getDownloadFiles") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -854,8 +791,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getDownloadOption") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -883,8 +820,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   }
 
   if (method == "getDownloadOptions") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);
@@ -921,8 +858,8 @@ void FlutterAria2Plugin::HandleMethodCall(
   // ════════════════════════════════════════════════════════════════
 
   if (method == "getDownloadBtMetaInfo") {
-    if (!session_) {
-      result->Error("NO_SESSION", "No active session");
+    if (const char* err = flutter_aria2::core::RequireSession(&core_)) {
+      result->Error(err, "No active session");
       return;
     }
     const auto& a = std::get<EMap>(*args);

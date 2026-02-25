@@ -1,6 +1,8 @@
 #include <jni.h>
 
 #include <aria2_c_api.h>
+#include "common/aria2_core.h"
+#include "common/aria2_helpers.h"
 
 #include <atomic>
 #include <chrono>
@@ -18,16 +20,25 @@ JavaVM* g_vm = nullptr;
 std::mutex g_event_sink_mutex;
 jobject g_event_sink = nullptr;  // Global ref to Aria2NativeManager.
 
+// RAII guard for JNI local refs to avoid local reference table overflow in loops.
+struct ScopedLocalRef {
+  JNIEnv* env = nullptr;
+  jobject ref = nullptr;
+  ScopedLocalRef(JNIEnv* e, jobject r) : env(e), ref(r) {}
+  ~ScopedLocalRef() {
+    if (env != nullptr && ref != nullptr) {
+      env->DeleteLocalRef(ref);
+    }
+  }
+  jobject get() const { return ref; }
+  ScopedLocalRef(const ScopedLocalRef&) = delete;
+  ScopedLocalRef& operator=(const ScopedLocalRef&) = delete;
+};
+
 constexpr const char* kErrorClassName =
     "me/junjie/xing/flutter_aria2/Aria2NativeException";
 
-struct Aria2State {
-  aria2_session_t* session = nullptr;
-  bool library_initialized = false;
-  std::thread run_thread;
-  std::atomic<bool> run_loop_active{false};
-  std::atomic<bool> run_in_progress{false};
-};
+struct Aria2State : public flutter_aria2::core::RuntimeState {};
 
 jfieldID GetNativeHandleFieldId(JNIEnv* env, jobject thiz) {
   jclass cls = env->GetObjectClass(thiz);
@@ -240,13 +251,6 @@ KeyValHelper OptionsFromArgs(JNIEnv* env, jobject args, const char* key) {
   return helper;
 }
 
-std::string GidToHex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result = hex == nullptr ? "" : hex;
-  if (hex != nullptr) aria2_free(hex);
-  return result;
-}
-
 void ThrowAria2Error(JNIEnv* env, const std::string& code,
                      const std::string& message) {
   if (env->ExceptionCheck()) return;
@@ -272,36 +276,30 @@ void ThrowAria2Error(JNIEnv* env, const std::string& code,
   env->DeleteLocalRef(ex);
 }
 
-void WaitForPendingRun(Aria2State* state) {
-  while (state->run_in_progress.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-}
+#define REQUIRE_SESSION() \
+  do { \
+    if (const char* _err = flutter_aria2::core::RequireSession(state)) { \
+      ThrowAria2Error(env, _err, "No active session"); \
+      return nullptr; \
+    } \
+  } while (0)
 
-void StopRunLoop(Aria2State* state) {
-  if (!state->run_loop_active.load()) return;
-  state->run_loop_active.store(false);
-  if (state->session != nullptr) {
-    aria2_shutdown(state->session, 1);
-  }
-  if (state->run_thread.joinable()) {
-    state->run_thread.join();
-  }
-}
+#define REQUIRE_INITIALIZED() \
+  do { \
+    if (const char* _err = flutter_aria2::core::RequireInitialized(state)) { \
+      ThrowAria2Error(env, _err, "Call libraryInit() before sessionNew()"); \
+      return nullptr; \
+    } \
+  } while (0)
 
-void CleanupState(Aria2State* state) {
-  if (state == nullptr) return;
-  StopRunLoop(state);
-  WaitForPendingRun(state);
-  if (state->session != nullptr) {
-    aria2_session_final(state->session);
-    state->session = nullptr;
-  }
-  if (state->library_initialized) {
-    aria2_library_deinit();
-    state->library_initialized = false;
-  }
-}
+#define REQUIRE_NO_SESSION() \
+  do { \
+    if (const char* _err = flutter_aria2::core::RequireNoSession(state)) { \
+      ThrowAria2Error(env, _err, \
+          "Session already exists. Call sessionFinal() first."); \
+      return nullptr; \
+    } \
+  } while (0)
 
 void EmitDownloadEvent(aria2_download_event_t event, const std::string& gid) {
   if (g_vm == nullptr) return;
@@ -342,33 +340,73 @@ int DownloadEventCallback(aria2_session_t* /*session*/,
                           aria2_download_event_t event,
                           aria2_gid_t gid,
                           void* /*user_data*/) {
-  EmitDownloadEvent(event, GidToHex(gid));
+  EmitDownloadEvent(event, flutter_aria2::common::GidToHex(gid));
   return 0;
 }
 
 jobject FileDataToJavaMap(JNIEnv* env, const aria2_file_data_t& file) {
   jobject file_map = NewHashMap(env);
-  HashMapPut(env, file_map, NewString(env, "index"), NewInteger(env, file.index));
-  HashMapPut(env, file_map, NewString(env, "path"),
-             NewString(env, file.path == nullptr ? "" : file.path));
-  HashMapPut(env, file_map, NewString(env, "length"),
-             NewLong(env, static_cast<int64_t>(file.length)));
-  HashMapPut(env, file_map, NewString(env, "completedLength"),
-             NewLong(env, static_cast<int64_t>(file.completed_length)));
-  HashMapPut(env, file_map, NewString(env, "selected"),
-             NewBoolean(env, file.selected != 0));
+  {
+    jobject k = NewString(env, "index");
+    jobject v = NewInteger(env, file.index);
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "path");
+    jobject v = NewString(env, file.path == nullptr ? "" : file.path);
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "length");
+    jobject v = NewLong(env, static_cast<int64_t>(file.length));
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "completedLength");
+    jobject v = NewLong(env, static_cast<int64_t>(file.completed_length));
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "selected");
+    jobject v = NewBoolean(env, file.selected != 0);
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
 
   jobject uris = NewArrayList(env);
   for (size_t i = 0; i < file.uris_count; ++i) {
     jobject uri_map = NewHashMap(env);
-    HashMapPut(env, uri_map, NewString(env, "uri"),
-               NewString(env, file.uris[i].uri == nullptr ? "" : file.uris[i].uri));
-    HashMapPut(env, uri_map, NewString(env, "status"),
-               NewInteger(env, static_cast<int>(file.uris[i].status)));
+    {
+      jobject k = NewString(env, "uri");
+      jobject v = NewString(env, file.uris[i].uri == nullptr ? "" : file.uris[i].uri);
+      HashMapPut(env, uri_map, k, v);
+      env->DeleteLocalRef(k);
+      env->DeleteLocalRef(v);
+    }
+    {
+      jobject k = NewString(env, "status");
+      jobject v = NewInteger(env, static_cast<int>(file.uris[i].status));
+      HashMapPut(env, uri_map, k, v);
+      env->DeleteLocalRef(k);
+      env->DeleteLocalRef(v);
+    }
     ArrayListAdd(env, uris, uri_map);
     env->DeleteLocalRef(uri_map);
   }
-  HashMapPut(env, file_map, NewString(env, "uris"), uris);
+  {
+    jobject k = NewString(env, "uris");
+    HashMapPut(env, file_map, k, uris);
+    env->DeleteLocalRef(k);
+  }
   env->DeleteLocalRef(uris);
   return file_map;
 }
@@ -376,45 +414,23 @@ jobject FileDataToJavaMap(JNIEnv* env, const aria2_file_data_t& file) {
 jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
                      jobject args) {
   if (method == "libraryInit") {
-    int ret = aria2_library_init();
-    if (ret == 0) state->library_initialized = true;
-    return NewInteger(env, ret);
+    return NewInteger(env, flutter_aria2::core::LibraryInit(state));
   }
 
   if (method == "libraryDeinit") {
-    StopRunLoop(state);
-    WaitForPendingRun(state);
-    if (state->session != nullptr) {
-      aria2_session_final(state->session);
-      state->session = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    state->library_initialized = false;
-    return NewInteger(env, ret);
+    return NewInteger(env, flutter_aria2::core::LibraryDeinit(state));
   }
 
   if (method == "sessionNew") {
-    if (!state->library_initialized) {
-      ThrowAria2Error(env, "NOT_INITIALIZED",
-                      "Call libraryInit() before sessionNew()");
-      return nullptr;
-    }
-    if (state->session != nullptr) {
-      ThrowAria2Error(env, "SESSION_EXISTS",
-                      "Session already exists. Call sessionFinal() first.");
-      return nullptr;
-    }
+    REQUIRE_INITIALIZED();
+    REQUIRE_NO_SESSION();
     auto options = OptionsFromArgs(env, args, "options");
     bool keep_running = MapGetBool(env, args, "keepRunning", true);
 
-    aria2_session_config_t config;
-    aria2_session_config_init(&config);
-    config.keep_running = keep_running ? 1 : 0;
-    config.download_event_callback = &DownloadEventCallback;
-    config.user_data = state;
-
-    state->session = aria2_session_new(options.data(), options.count(), &config);
-    if (state->session == nullptr) {
+    const char* error = flutter_aria2::core::SessionNew(
+        state, options.data(), options.count(), keep_running,
+        &DownloadEventCallback, state);
+    if (error != nullptr) {
       ThrowAria2Error(env, "SESSION_FAILED", "aria2_session_new returned null");
       return nullptr;
     }
@@ -422,72 +438,38 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "sessionFinal") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
-    StopRunLoop(state);
-    WaitForPendingRun(state);
-    int ret = aria2_session_final(state->session);
-    state->session = nullptr;
+    REQUIRE_SESSION();
+    int ret = 0;
+    flutter_aria2::core::SessionFinal(state, &ret);
     return NewInteger(env, ret);
   }
 
   if (method == "run") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
-    if (state->run_in_progress.load()) {
-      return NewInteger(env, 1);
-    }
-    state->run_in_progress.store(true);
-    int ret = aria2_run(state->session, ARIA2_RUN_ONCE);
-    state->run_in_progress.store(false);
-    return NewInteger(env, ret);
+    REQUIRE_SESSION();
+    return NewInteger(env, flutter_aria2::core::RunOnce(state));
   }
 
   if (method == "startRunLoop") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
-    if (state->run_loop_active.load()) {
-      return nullptr;
-    }
-
-    state->run_loop_active.store(true);
-    auto* session = state->session;
-    if (state->run_thread.joinable()) {
-      state->run_thread.join();
-    }
-    state->run_thread = std::thread([state, session]() {
-      aria2_run(session, ARIA2_RUN_DEFAULT);
-      state->run_loop_active.store(false);
-    });
+    REQUIRE_SESSION();
+    flutter_aria2::core::StartRunLoop(state);
     return nullptr;
   }
 
   if (method == "stopRunLoop") {
-    StopRunLoop(state);
+    flutter_aria2::core::StopRunLoop(state);
     return nullptr;
   }
 
   if (method == "shutdown") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     int force = MapGetBool(env, args, "force", false) ? 1 : 0;
-    int ret = aria2_shutdown(state->session, force);
+    int ret = 0;
+    flutter_aria2::core::Shutdown(state, force != 0, &ret);
     return NewInteger(env, ret);
   }
 
   if (method == "addUri") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     jobject uris_list = MapGetList(env, args, "uris");
     if (uris_list == nullptr) {
       ThrowAria2Error(env, "BAD_ARGS", "Missing 'uris'");
@@ -509,14 +491,11 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
                       "aria2_add_uri failed with code " + std::to_string(ret));
       return nullptr;
     }
-    return NewString(env, GidToHex(gid));
+    return NewString(env, flutter_aria2::common::GidToHex(gid));
   }
 
   if (method == "addTorrent") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string torrent_file = MapGetString(env, args, "torrentFile");
     jobject ws_list = MapGetList(env, args, "webseedUris");
     auto webseeds = JavaListToStringVector(env, ws_list);
@@ -543,14 +522,11 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
                       "aria2_add_torrent failed with code " + std::to_string(ret));
       return nullptr;
     }
-    return NewString(env, GidToHex(gid));
+    return NewString(env, flutter_aria2::common::GidToHex(gid));
   }
 
   if (method == "addMetalink") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string metalink_file = MapGetString(env, args, "metalinkFile");
     auto options = OptionsFromArgs(env, args, "options");
     int position = MapGetInt(env, args, "position", -1);
@@ -568,7 +544,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
     jobject list = NewArrayList(env);
     for (size_t i = 0; i < gids_count; ++i) {
-      jobject gid_obj = NewString(env, GidToHex(gids[i]));
+        jobject gid_obj =
+            NewString(env, flutter_aria2::common::GidToHex(gids[i]));
       ArrayListAdd(env, list, gid_obj);
       env->DeleteLocalRef(gid_obj);
     }
@@ -577,10 +554,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getActiveDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     aria2_gid_t* gids = nullptr;
     size_t gids_count = 0;
     int ret = aria2_get_active_download(state->session, &gids, &gids_count);
@@ -593,7 +567,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
     jobject list = NewArrayList(env);
     for (size_t i = 0; i < gids_count; ++i) {
-      jobject gid_obj = NewString(env, GidToHex(gids[i]));
+        jobject gid_obj =
+            NewString(env, flutter_aria2::common::GidToHex(gids[i]));
       ArrayListAdd(env, list, gid_obj);
       env->DeleteLocalRef(gid_obj);
     }
@@ -602,10 +577,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "removeDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     bool force = MapGetBool(env, args, "force", false);
     int ret = aria2_remove_download(state->session, aria2_hex_to_gid(hex.c_str()),
@@ -614,10 +586,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "pauseDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     bool force = MapGetBool(env, args, "force", false);
     int ret = aria2_pause_download(state->session, aria2_hex_to_gid(hex.c_str()),
@@ -626,20 +595,14 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "unpauseDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     int ret = aria2_unpause_download(state->session, aria2_hex_to_gid(hex.c_str()));
     return NewInteger(env, ret);
   }
 
   if (method == "changePosition") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     int pos = MapGetInt(env, args, "pos", 0);
     int how = MapGetInt(env, args, "how", 0);
@@ -650,10 +613,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "changeOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     auto options = OptionsFromArgs(env, args, "options");
     int ret = aria2_change_option(state->session, aria2_hex_to_gid(hex.c_str()),
@@ -662,10 +622,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getGlobalOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string name = MapGetString(env, args, "name");
     char* value = aria2_get_global_option(state->session, name.c_str());
     if (value == nullptr) return nullptr;
@@ -675,10 +632,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getGlobalOptions") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     aria2_key_val_t* options = nullptr;
     size_t count = 0;
     int ret = aria2_get_global_options(state->session, &options, &count);
@@ -691,18 +645,18 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
     jobject map = NewHashMap(env);
     for (size_t i = 0; i < count; ++i) {
-      HashMapPut(env, map, NewString(env, options[i].key == nullptr ? "" : options[i].key),
-                 NewString(env, options[i].value == nullptr ? "" : options[i].value));
+      jobject k = NewString(env, options[i].key == nullptr ? "" : options[i].key);
+      jobject v = NewString(env, options[i].value == nullptr ? "" : options[i].value);
+      HashMapPut(env, map, k, v);
+      env->DeleteLocalRef(k);
+      env->DeleteLocalRef(v);
     }
     if (options != nullptr) aria2_free_key_vals(options, count);
     return map;
   }
 
   if (method == "changeGlobalOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     auto options = OptionsFromArgs(env, args, "options");
     int ret = aria2_change_global_option(state->session, options.data(),
                                          options.count());
@@ -710,30 +664,39 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getGlobalStat") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     aria2_global_stat_t stat = aria2_get_global_stat(state->session);
     jobject map = NewHashMap(env);
-    HashMapPut(env, map, NewString(env, "downloadSpeed"),
-               NewLong(env, static_cast<int64_t>(stat.download_speed)));
-    HashMapPut(env, map, NewString(env, "uploadSpeed"),
-               NewLong(env, static_cast<int64_t>(stat.upload_speed)));
-    HashMapPut(env, map, NewString(env, "numActive"),
-               NewInteger(env, stat.num_active));
-    HashMapPut(env, map, NewString(env, "numWaiting"),
-               NewInteger(env, stat.num_waiting));
-    HashMapPut(env, map, NewString(env, "numStopped"),
-               NewInteger(env, stat.num_stopped));
+    jobject k1 = NewString(env, "downloadSpeed");
+    jobject v1 = NewLong(env, static_cast<int64_t>(stat.download_speed));
+    HashMapPut(env, map, k1, v1);
+    env->DeleteLocalRef(k1);
+    env->DeleteLocalRef(v1);
+    jobject k2 = NewString(env, "uploadSpeed");
+    jobject v2 = NewLong(env, static_cast<int64_t>(stat.upload_speed));
+    HashMapPut(env, map, k2, v2);
+    env->DeleteLocalRef(k2);
+    env->DeleteLocalRef(v2);
+    jobject k3 = NewString(env, "numActive");
+    jobject v3 = NewInteger(env, stat.num_active);
+    HashMapPut(env, map, k3, v3);
+    env->DeleteLocalRef(k3);
+    env->DeleteLocalRef(v3);
+    jobject k4 = NewString(env, "numWaiting");
+    jobject v4 = NewInteger(env, stat.num_waiting);
+    HashMapPut(env, map, k4, v4);
+    env->DeleteLocalRef(k4);
+    env->DeleteLocalRef(v4);
+    jobject k5 = NewString(env, "numStopped");
+    jobject v5 = NewInteger(env, stat.num_stopped);
+    HashMapPut(env, map, k5, v5);
+    env->DeleteLocalRef(k5);
+    env->DeleteLocalRef(v5);
     return map;
   }
 
   if (method == "getDownloadInfo") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -744,19 +707,47 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
 
     jobject map = NewHashMap(env);
-    HashMapPut(env, map, NewString(env, "gid"), NewString(env, hex));
-    HashMapPut(env, map, NewString(env, "status"),
-               NewInteger(env, static_cast<int>(aria2_download_handle_get_status(dh))));
-    HashMapPut(env, map, NewString(env, "totalLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_total_length(dh))));
-    HashMapPut(env, map, NewString(env, "completedLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_completed_length(dh))));
-    HashMapPut(env, map, NewString(env, "uploadLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_length(dh))));
-    HashMapPut(env, map, NewString(env, "downloadSpeed"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_download_speed(dh))));
-    HashMapPut(env, map, NewString(env, "uploadSpeed"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_speed(dh))));
+    jobject k_gid = NewString(env, "gid");
+    jobject v_gid = NewString(env, hex);
+    HashMapPut(env, map, k_gid, v_gid);
+    env->DeleteLocalRef(k_gid);
+    env->DeleteLocalRef(v_gid);
+
+    jobject k_st = NewString(env, "status");
+    jobject v_st = NewInteger(env, static_cast<int>(aria2_download_handle_get_status(dh)));
+    HashMapPut(env, map, k_st, v_st);
+    env->DeleteLocalRef(k_st);
+    env->DeleteLocalRef(v_st);
+
+    jobject k_tl = NewString(env, "totalLength");
+    jobject v_tl = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_total_length(dh)));
+    HashMapPut(env, map, k_tl, v_tl);
+    env->DeleteLocalRef(k_tl);
+    env->DeleteLocalRef(v_tl);
+
+    jobject k_cl = NewString(env, "completedLength");
+    jobject v_cl = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_completed_length(dh)));
+    HashMapPut(env, map, k_cl, v_cl);
+    env->DeleteLocalRef(k_cl);
+    env->DeleteLocalRef(v_cl);
+
+    jobject k_ul = NewString(env, "uploadLength");
+    jobject v_ul = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_length(dh)));
+    HashMapPut(env, map, k_ul, v_ul);
+    env->DeleteLocalRef(k_ul);
+    env->DeleteLocalRef(v_ul);
+
+    jobject k_ds = NewString(env, "downloadSpeed");
+    jobject v_ds = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_download_speed(dh)));
+    HashMapPut(env, map, k_ds, v_ds);
+    env->DeleteLocalRef(k_ds);
+    env->DeleteLocalRef(v_ds);
+
+    jobject k_us = NewString(env, "uploadSpeed");
+    jobject v_us = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_speed(dh)));
+    HashMapPut(env, map, k_us, v_us);
+    env->DeleteLocalRef(k_us);
+    env->DeleteLocalRef(v_us);
 
     aria2_binary_t ih = aria2_download_handle_get_info_hash(dh);
     if (ih.data != nullptr && ih.length > 0) {
@@ -766,56 +757,95 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
         std::snprintf(buf, sizeof(buf), "%02x", ih.data[i]);
         ss << buf;
       }
-      HashMapPut(env, map, NewString(env, "infoHash"), NewString(env, ss.str()));
+      jobject k_ih = NewString(env, "infoHash");
+      jobject v_ih = NewString(env, ss.str());
+      HashMapPut(env, map, k_ih, v_ih);
+      env->DeleteLocalRef(k_ih);
+      env->DeleteLocalRef(v_ih);
       aria2_free_binary(&ih);
     } else {
-      HashMapPut(env, map, NewString(env, "infoHash"), NewString(env, ""));
+      jobject k_ih = NewString(env, "infoHash");
+      jobject v_ih = NewString(env, "");
+      HashMapPut(env, map, k_ih, v_ih);
+      env->DeleteLocalRef(k_ih);
+      env->DeleteLocalRef(v_ih);
     }
 
-    HashMapPut(env, map, NewString(env, "pieceLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_piece_length(dh))));
-    HashMapPut(env, map, NewString(env, "numPieces"),
-               NewInteger(env, aria2_download_handle_get_num_pieces(dh)));
-    HashMapPut(env, map, NewString(env, "connections"),
-               NewInteger(env, aria2_download_handle_get_connections(dh)));
-    HashMapPut(env, map, NewString(env, "errorCode"),
-               NewInteger(env, aria2_download_handle_get_error_code(dh)));
+    jobject k_pl = NewString(env, "pieceLength");
+    jobject v_pl = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_piece_length(dh)));
+    HashMapPut(env, map, k_pl, v_pl);
+    env->DeleteLocalRef(k_pl);
+    env->DeleteLocalRef(v_pl);
+
+    jobject k_np = NewString(env, "numPieces");
+    jobject v_np = NewInteger(env, aria2_download_handle_get_num_pieces(dh));
+    HashMapPut(env, map, k_np, v_np);
+    env->DeleteLocalRef(k_np);
+    env->DeleteLocalRef(v_np);
+
+    jobject k_conn = NewString(env, "connections");
+    jobject v_conn = NewInteger(env, aria2_download_handle_get_connections(dh));
+    HashMapPut(env, map, k_conn, v_conn);
+    env->DeleteLocalRef(k_conn);
+    env->DeleteLocalRef(v_conn);
+
+    jobject k_ec = NewString(env, "errorCode");
+    jobject v_ec = NewInteger(env, aria2_download_handle_get_error_code(dh));
+    HashMapPut(env, map, k_ec, v_ec);
+    env->DeleteLocalRef(k_ec);
+    env->DeleteLocalRef(v_ec);
 
     aria2_gid_t* followed_by = nullptr;
     size_t followed_count = 0;
     jobject followed_list = NewArrayList(env);
     if (aria2_download_handle_get_followed_by(dh, &followed_by, &followed_count) == 0) {
       for (size_t i = 0; i < followed_count; ++i) {
-        jobject gid_obj = NewString(env, GidToHex(followed_by[i]));
+        jobject gid_obj =
+            NewString(env, flutter_aria2::common::GidToHex(followed_by[i]));
         ArrayListAdd(env, followed_list, gid_obj);
         env->DeleteLocalRef(gid_obj);
       }
       if (followed_by != nullptr) aria2_free(followed_by);
     }
-    HashMapPut(env, map, NewString(env, "followedBy"), followed_list);
+    jobject k_fb = NewString(env, "followedBy");
+    HashMapPut(env, map, k_fb, followed_list);
+    env->DeleteLocalRef(k_fb);
     env->DeleteLocalRef(followed_list);
 
-    HashMapPut(env, map, NewString(env, "following"),
-               NewString(env, GidToHex(aria2_download_handle_get_following(dh))));
-    HashMapPut(env, map, NewString(env, "belongsTo"),
-               NewString(env, GidToHex(aria2_download_handle_get_belongs_to(dh))));
+    jobject k_following = NewString(env, "following");
+    jobject v_following = NewString(env, flutter_aria2::common::GidToHex(
+                                            aria2_download_handle_get_following(dh)));
+    HashMapPut(env, map, k_following, v_following);
+    env->DeleteLocalRef(k_following);
+    env->DeleteLocalRef(v_following);
+
+    jobject k_belongs = NewString(env, "belongsTo");
+    jobject v_belongs = NewString(env, flutter_aria2::common::GidToHex(
+                                          aria2_download_handle_get_belongs_to(dh)));
+    HashMapPut(env, map, k_belongs, v_belongs);
+    env->DeleteLocalRef(k_belongs);
+    env->DeleteLocalRef(v_belongs);
 
     char* dir = aria2_download_handle_get_dir(dh);
-    HashMapPut(env, map, NewString(env, "dir"), NewString(env, dir == nullptr ? "" : dir));
+    jobject k_dir = NewString(env, "dir");
+    jobject v_dir = NewString(env, dir == nullptr ? "" : dir);
+    HashMapPut(env, map, k_dir, v_dir);
+    env->DeleteLocalRef(k_dir);
+    env->DeleteLocalRef(v_dir);
     if (dir != nullptr) aria2_free(dir);
 
-    HashMapPut(env, map, NewString(env, "numFiles"),
-               NewInteger(env, aria2_download_handle_get_num_files(dh)));
+    jobject k_nf = NewString(env, "numFiles");
+    jobject v_nf = NewInteger(env, aria2_download_handle_get_num_files(dh));
+    HashMapPut(env, map, k_nf, v_nf);
+    env->DeleteLocalRef(k_nf);
+    env->DeleteLocalRef(v_nf);
 
     aria2_delete_download_handle(dh);
     return map;
   }
 
   if (method == "getDownloadFiles") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -842,10 +872,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     std::string name = MapGetString(env, args, "name");
     aria2_download_handle_t* dh =
@@ -864,10 +891,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadOptions") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -883,9 +907,11 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     jobject map = NewHashMap(env);
     if (ret == 0 && options != nullptr) {
       for (size_t i = 0; i < count; ++i) {
-        HashMapPut(env, map,
-                   NewString(env, options[i].key == nullptr ? "" : options[i].key),
-                   NewString(env, options[i].value == nullptr ? "" : options[i].value));
+        jobject k = NewString(env, options[i].key == nullptr ? "" : options[i].key);
+        jobject v = NewString(env, options[i].value == nullptr ? "" : options[i].value);
+        HashMapPut(env, map, k, v);
+        env->DeleteLocalRef(k);
+        env->DeleteLocalRef(v);
       }
       aria2_free_key_vals(options, count);
     }
@@ -894,10 +920,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadBtMetaInfo") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -922,16 +945,34 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       ArrayListAdd(env, announce_list, tier);
       env->DeleteLocalRef(tier);
     }
-    HashMapPut(env, map, NewString(env, "announceList"), announce_list);
-    HashMapPut(env, map, NewString(env, "comment"),
-               NewString(env, meta.comment == nullptr ? "" : meta.comment));
-    HashMapPut(env, map, NewString(env, "creationDate"),
-               NewLong(env, static_cast<int64_t>(meta.creation_date)));
-    HashMapPut(env, map, NewString(env, "mode"),
-               NewInteger(env, static_cast<int>(meta.mode)));
-    HashMapPut(env, map, NewString(env, "name"),
-               NewString(env, meta.name == nullptr ? "" : meta.name));
+    jobject k_al = NewString(env, "announceList");
+    HashMapPut(env, map, k_al, announce_list);
+    env->DeleteLocalRef(k_al);
     env->DeleteLocalRef(announce_list);
+
+    jobject k_c = NewString(env, "comment");
+    jobject v_c = NewString(env, meta.comment == nullptr ? "" : meta.comment);
+    HashMapPut(env, map, k_c, v_c);
+    env->DeleteLocalRef(k_c);
+    env->DeleteLocalRef(v_c);
+
+    jobject k_cd = NewString(env, "creationDate");
+    jobject v_cd = NewLong(env, static_cast<int64_t>(meta.creation_date));
+    HashMapPut(env, map, k_cd, v_cd);
+    env->DeleteLocalRef(k_cd);
+    env->DeleteLocalRef(v_cd);
+
+    jobject k_m = NewString(env, "mode");
+    jobject v_m = NewInteger(env, static_cast<int>(meta.mode));
+    HashMapPut(env, map, k_m, v_m);
+    env->DeleteLocalRef(k_m);
+    env->DeleteLocalRef(v_m);
+
+    jobject k_n = NewString(env, "name");
+    jobject v_n = NewString(env, meta.name == nullptr ? "" : meta.name);
+    HashMapPut(env, map, k_n, v_n);
+    env->DeleteLocalRef(k_n);
+    env->DeleteLocalRef(v_n);
 
     aria2_free_bt_meta_info_data(&meta);
     aria2_delete_download_handle(dh);
@@ -954,7 +995,7 @@ Java_me_junjie_xing_flutter_1aria2_Aria2NativeManager_nativeInit(
     JNIEnv* env, jobject thiz) {
   auto* state = GetState(env, thiz);
   if (state != nullptr) {
-    CleanupState(state);
+    flutter_aria2::core::CleanupState(state);
     delete state;
   }
   SetState(env, thiz, new Aria2State());
@@ -965,7 +1006,7 @@ Java_me_junjie_xing_flutter_1aria2_Aria2NativeManager_nativeDispose(
     JNIEnv* env, jobject thiz) {
   auto* state = GetState(env, thiz);
   if (state == nullptr) return;
-  CleanupState(state);
+  flutter_aria2::core::CleanupState(state);
   delete state;
   SetState(env, thiz, nullptr);
 }

@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+
 import 'flutter_aria2_platform_interface.dart';
 
 // ──────────────────────────── Enums ────────────────────────────
@@ -78,6 +80,39 @@ enum Aria2BtFileMode {
 }
 
 // ──────────────────────────── Data Classes ────────────────────────────
+
+/// aria2 插件抛出的异常，统一包装平台错误（如 [PlatformException]）。
+///
+/// 调用 [FlutterAria2] 方法时，若原生层返回错误（如 NO_SESSION、NOT_INITIALIZED、
+/// ARIA2_ERROR 等），会抛出本异常而非静默返回默认值。
+class Aria2Exception implements Exception {
+  /// 错误码，与原生层一致（如 NO_SESSION、NOT_INITIALIZED、SESSION_EXISTS、ARIA2_ERROR 等）。
+  final String code;
+
+  /// 人类可读的错误描述。
+  final String message;
+
+  /// 原始平台异常（若有），便于调试或需要时访问 details。
+  final PlatformException? platformException;
+
+  const Aria2Exception({
+    required this.code,
+    required this.message,
+    this.platformException,
+  });
+
+  /// 从 [PlatformException] 构造。
+  factory Aria2Exception.fromPlatform(PlatformException e) {
+    return Aria2Exception(
+      code: e.code ?? 'UNKNOWN',
+      message: e.message ?? e.details?.toString() ?? 'Unknown platform error',
+      platformException: e,
+    );
+  }
+
+  @override
+  String toString() => 'Aria2Exception($code: $message)';
+}
 
 /// 下载事件数据
 class Aria2DownloadEventData {

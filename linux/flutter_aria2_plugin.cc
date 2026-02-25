@@ -6,7 +6,6 @@
 #include <sys/utsname.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -15,6 +14,8 @@
 #include <thread>
 #include <vector>
 
+#include "../common/aria2_core.h"
+#include "../common/aria2_helpers.h"
 #include "flutter_aria2_plugin_private.h"
 
 #define FLUTTER_ARIA2_PLUGIN(obj) \
@@ -107,15 +108,6 @@ KeyValHelper options_from_map(FlValue* args, const gchar* key) {
   return kv;
 }
 
-std::string gid_to_hex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result = hex == nullptr ? "" : hex;
-  if (hex != nullptr) {
-    aria2_free(hex);
-  }
-  return result;
-}
-
 FlValue* file_data_to_fl_value(const aria2_file_data_t& file) {
   FlValue* map = fl_value_new_map();
   fl_value_set_string(map, "index", fl_value_new_int(file.index));
@@ -152,23 +144,50 @@ FlMethodResponse* error_response(const gchar* code, const gchar* message) {
   return FL_METHOD_RESPONSE(fl_method_error_response_new(code, message, nullptr));
 }
 
-void wait_for_pending_run(FlutterAria2Plugin* self) {
-  while (self->run_in_progress.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+static const char* require_session(FlutterAria2Plugin* self) {
+  flutter_aria2::core::RuntimeState s;
+  s.session = self->session;
+  s.library_initialized = self->library_initialized;
+  return flutter_aria2::core::RequireSession(&s);
+}
+
+static const char* require_initialized(FlutterAria2Plugin* self) {
+  flutter_aria2::core::RuntimeState s;
+  s.session = self->session;
+  s.library_initialized = self->library_initialized;
+  return flutter_aria2::core::RequireInitialized(&s);
+}
+
+static const char* require_no_session(FlutterAria2Plugin* self) {
+  flutter_aria2::core::RuntimeState s;
+  s.session = self->session;
+  s.library_initialized = self->library_initialized;
+  return flutter_aria2::core::RequireNoSession(&s);
+}
+
+flutter_aria2::core::RuntimeState take_core_state(FlutterAria2Plugin* self) {
+  flutter_aria2::core::RuntimeState core;
+  core.session = self->session;
+  core.library_initialized = self->library_initialized;
+  core.run_thread = std::move(self->run_thread);
+  core.run_loop_active.store(self->run_loop_active.load());
+  core.run_in_progress.store(self->run_in_progress.load());
+  return core;
+}
+
+void put_core_state(FlutterAria2Plugin* self,
+                    flutter_aria2::core::RuntimeState&& core) {
+  self->session = core.session;
+  self->library_initialized = core.library_initialized;
+  self->run_thread = std::move(core.run_thread);
+  self->run_loop_active.store(core.run_loop_active.load());
+  self->run_in_progress.store(core.run_in_progress.load());
 }
 
 void stop_run_loop(FlutterAria2Plugin* self) {
-  if (!self->run_loop_active.load()) {
-    return;
-  }
-  self->run_loop_active.store(false);
-  if (self->session != nullptr) {
-    aria2_shutdown(self->session, 1);
-  }
-  if (self->run_thread.joinable()) {
-    self->run_thread.join();
-  }
+  auto core = take_core_state(self);
+  flutter_aria2::core::StopRunLoop(&core);
+  put_core_state(self, std::move(core));
 }
 
 struct EventPayload {
@@ -197,7 +216,7 @@ int download_event_callback(aria2_session_t* /*session*/,
   auto* payload = new EventPayload{
       plugin,
       static_cast<int>(event),
-      gid_to_hex(gid),
+      flutter_aria2::common::GidToHex(gid),
   };
   g_main_context_invoke(nullptr, send_download_event_on_main, payload);
   return 0;
@@ -217,40 +236,30 @@ static void flutter_aria2_plugin_handle_method_call(
   if (strcmp(method, "getPlatformVersion") == 0) {
     response = get_platform_version();
   } else if (strcmp(method, "libraryInit") == 0) {
-    int ret = aria2_library_init();
-    if (ret == 0) {
-      self->library_initialized = TRUE;
-    }
+    auto core = take_core_state(self);
+    int ret = flutter_aria2::core::LibraryInit(&core);
+    put_core_state(self, std::move(core));
     response = success_response(fl_value_new_int(ret));
   } else if (strcmp(method, "libraryDeinit") == 0) {
-    stop_run_loop(self);
-    wait_for_pending_run(self);
-    if (self->session != nullptr) {
-      aria2_session_final(self->session);
-      self->session = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    self->library_initialized = FALSE;
+    auto core = take_core_state(self);
+    int ret = flutter_aria2::core::LibraryDeinit(&core);
+    put_core_state(self, std::move(core));
     response = success_response(fl_value_new_int(ret));
   } else if (strcmp(method, "sessionNew") == 0) {
-    if (!self->library_initialized) {
-      response = error_response("NOT_INITIALIZED",
-                                "Call libraryInit() before sessionNew()");
-    } else if (self->session != nullptr) {
-      response = error_response("SESSION_EXISTS",
+    if (const char* err = require_initialized(self)) {
+      response = error_response(err, "Call libraryInit() before sessionNew()");
+    } else if (const char* err = require_no_session(self)) {
+      response = error_response(err,
                                 "Session already exists. Call sessionFinal() first.");
     } else {
       KeyValHelper options = options_from_map(args, "options");
       bool keep_running = map_get_bool(args, "keepRunning", true);
-
-      aria2_session_config_t config;
-      aria2_session_config_init(&config);
-      config.keep_running = keep_running ? 1 : 0;
-      config.download_event_callback = &download_event_callback;
-      config.user_data = self;
-
-      self->session = aria2_session_new(options.data(), options.count(), &config);
-      if (self->session == nullptr) {
+      auto core = take_core_state(self);
+      const char* error = flutter_aria2::core::SessionNew(
+          &core, options.data(), options.count(), keep_running,
+          &download_event_callback, self);
+      put_core_state(self, std::move(core));
+      if (error != nullptr) {
         response =
             error_response("SESSION_FAILED", "aria2_session_new returned null");
       } else {
@@ -258,62 +267,52 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "sessionFinal") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
-      stop_run_loop(self);
-      wait_for_pending_run(self);
-      int ret = aria2_session_final(self->session);
-      self->session = nullptr;
+      auto core = take_core_state(self);
+      int ret = 0;
+      flutter_aria2::core::SessionFinal(&core, &ret);
+      put_core_state(self, std::move(core));
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "run") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
-    } else if (self->run_in_progress.load()) {
-      response = success_response(fl_value_new_int(1));
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
-      self->run_in_progress.store(true);
-      int ret = -1;
-      try {
-        ret = aria2_run(self->session, ARIA2_RUN_ONCE);
-      } catch (...) {
-        ret = -1;
-      }
-      self->run_in_progress.store(false);
+      auto core = take_core_state(self);
+      int ret = flutter_aria2::core::RunOnce(&core);
+      put_core_state(self, std::move(core));
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "startRunLoop") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else if (self->run_loop_active.load()) {
       response = null_success_response();
     } else {
-      self->run_loop_active.store(true);
-      aria2_session_t* session = self->session;
-      if (self->run_thread.joinable()) {
-        self->run_thread.join();
-      }
-      self->run_thread = std::thread([self, session]() {
-        aria2_run(session, ARIA2_RUN_DEFAULT);
-        self->run_loop_active.store(false);
-      });
+      auto core = take_core_state(self);
+      flutter_aria2::core::StartRunLoop(&core);
+      put_core_state(self, std::move(core));
       response = null_success_response();
     }
   } else if (strcmp(method, "stopRunLoop") == 0) {
     stop_run_loop(self);
     response = null_success_response();
   } else if (strcmp(method, "shutdown") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       int force = map_get_bool(args, "force", false) ? 1 : 0;
-      int ret = aria2_shutdown(self->session, force);
+      auto core = take_core_state(self);
+      int ret = 0;
+      flutter_aria2::core::Shutdown(&core, force != 0, &ret);
+      put_core_state(self, std::move(core));
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "addUri") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       FlValue* uris = map_get(args, "uris");
       if (uris == nullptr || fl_value_get_type(uris) != FL_VALUE_TYPE_LIST) {
@@ -341,7 +340,8 @@ static void flutter_aria2_plugin_handle_method_call(
                                 uri_ptrs.size(), options.data(), options.count(),
                                 position);
         if (ret == 0) {
-          response = success_response(fl_value_new_string(gid_to_hex(gid).c_str()));
+          response = success_response(fl_value_new_string(
+              flutter_aria2::common::GidToHex(gid).c_str()));
         } else {
           g_autofree gchar* message =
               g_strdup_printf("aria2_add_uri failed with code %d", ret);
@@ -350,8 +350,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "addTorrent") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string torrent_file = map_get_string(args, "torrentFile");
       FlValue* ws = map_get(args, "webseedUris");
@@ -383,7 +383,8 @@ static void flutter_aria2_plugin_handle_method_call(
                                         ws_ptrs.data(), ws_ptrs.size(),
                                         options.data(), options.count(), position);
       if (ret == 0) {
-        response = success_response(fl_value_new_string(gid_to_hex(gid).c_str()));
+        response = success_response(fl_value_new_string(
+            flutter_aria2::common::GidToHex(gid).c_str()));
       } else {
         g_autofree gchar* message =
             g_strdup_printf("aria2_add_torrent failed with code %d", ret);
@@ -391,8 +392,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "addMetalink") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string metalink_file = map_get_string(args, "metalinkFile");
       KeyValHelper options = options_from_map(args, "options");
@@ -405,7 +406,9 @@ static void flutter_aria2_plugin_handle_method_call(
       if (ret == 0) {
         FlValue* gid_list = fl_value_new_list();
         for (size_t i = 0; i < gids_count; ++i) {
-          fl_value_append(gid_list, fl_value_new_string(gid_to_hex(gids[i]).c_str()));
+          fl_value_append(
+              gid_list, fl_value_new_string(
+                            flutter_aria2::common::GidToHex(gids[i]).c_str()));
         }
         if (gids != nullptr) {
           aria2_free(gids);
@@ -421,8 +424,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "getActiveDownload") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       aria2_gid_t* gids = nullptr;
       size_t gids_count = 0;
@@ -430,7 +433,9 @@ static void flutter_aria2_plugin_handle_method_call(
       if (ret == 0) {
         FlValue* gid_list = fl_value_new_list();
         for (size_t i = 0; i < gids_count; ++i) {
-          fl_value_append(gid_list, fl_value_new_string(gid_to_hex(gids[i]).c_str()));
+          fl_value_append(
+              gid_list, fl_value_new_string(
+                            flutter_aria2::common::GidToHex(gids[i]).c_str()));
         }
         if (gids != nullptr) {
           aria2_free(gids);
@@ -446,8 +451,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "removeDownload") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       bool force = map_get_bool(args, "force", false);
@@ -456,8 +461,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "pauseDownload") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       bool force = map_get_bool(args, "force", false);
@@ -466,8 +471,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "unpauseDownload") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       aria2_gid_t gid = aria2_hex_to_gid(gid_hex.c_str());
@@ -475,8 +480,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "changePosition") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       int pos = map_get_int(args, "pos", 0);
@@ -487,8 +492,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "changeOption") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       KeyValHelper options = options_from_map(args, "options");
@@ -498,8 +503,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "getGlobalOption") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string name = map_get_string(args, "name");
       char* value = aria2_get_global_option(self->session, name.c_str());
@@ -511,8 +516,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "getGlobalOptions") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       aria2_key_val_t* options = nullptr;
       size_t options_count = 0;
@@ -538,8 +543,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "changeGlobalOption") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       KeyValHelper options = options_from_map(args, "options");
       int ret = aria2_change_global_option(self->session, options.data(),
@@ -547,8 +552,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(fl_value_new_int(ret));
     }
   } else if (strcmp(method, "getGlobalStat") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       aria2_global_stat_t stat = aria2_get_global_stat(self->session);
       FlValue* map = fl_value_new_map();
@@ -561,8 +566,8 @@ static void flutter_aria2_plugin_handle_method_call(
       response = success_response(map);
     }
   } else if (strcmp(method, "getDownloadInfo") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       aria2_gid_t gid = aria2_hex_to_gid(gid_hex.c_str());
@@ -629,7 +634,8 @@ static void flutter_aria2_plugin_handle_method_call(
           for (size_t i = 0; i < followed_count; ++i) {
             fl_value_append(
                 followed_list,
-                fl_value_new_string(gid_to_hex(followed_by[i]).c_str()));
+                fl_value_new_string(
+                    flutter_aria2::common::GidToHex(followed_by[i]).c_str()));
           }
           if (followed_by != nullptr) {
             aria2_free(followed_by);
@@ -639,11 +645,15 @@ static void flutter_aria2_plugin_handle_method_call(
         fl_value_set_string(
             map, "following",
             fl_value_new_string(
-                gid_to_hex(aria2_download_handle_get_following(handle)).c_str()));
+                flutter_aria2::common::GidToHex(
+                    aria2_download_handle_get_following(handle))
+                    .c_str()));
         fl_value_set_string(
             map, "belongsTo",
             fl_value_new_string(
-                gid_to_hex(aria2_download_handle_get_belongs_to(handle)).c_str()));
+                flutter_aria2::common::GidToHex(
+                    aria2_download_handle_get_belongs_to(handle))
+                    .c_str()));
 
         char* dir = aria2_download_handle_get_dir(handle);
         fl_value_set_string(map, "dir",
@@ -660,8 +670,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "getDownloadFiles") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       aria2_gid_t gid = aria2_hex_to_gid(gid_hex.c_str());
@@ -686,8 +696,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "getDownloadOption") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       std::string name = map_get_string(args, "name");
@@ -709,8 +719,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "getDownloadOptions") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       aria2_gid_t gid = aria2_hex_to_gid(gid_hex.c_str());
@@ -739,8 +749,8 @@ static void flutter_aria2_plugin_handle_method_call(
       }
     }
   } else if (strcmp(method, "getDownloadBtMetaInfo") == 0) {
-    if (self->session == nullptr) {
-      response = error_response("NO_SESSION", "No active session");
+    if (const char* err = require_session(self)) {
+      response = error_response(err, "No active session");
     } else {
       std::string gid_hex = map_get_string(args, "gid");
       aria2_gid_t gid = aria2_hex_to_gid(gid_hex.c_str());
@@ -798,16 +808,9 @@ FlMethodResponse* get_platform_version() {
 
 static void flutter_aria2_plugin_dispose(GObject* object) {
   auto* self = FLUTTER_ARIA2_PLUGIN(object);
-  stop_run_loop(self);
-  wait_for_pending_run(self);
-  if (self->session != nullptr) {
-    aria2_session_final(self->session);
-    self->session = nullptr;
-  }
-  if (self->library_initialized) {
-    aria2_library_deinit();
-    self->library_initialized = FALSE;
-  }
+  auto core = take_core_state(self);
+  flutter_aria2::core::CleanupState(&core);
+  put_core_state(self, std::move(core));
   if (self->channel != nullptr) {
     g_object_unref(self->channel);
     self->channel = nullptr;

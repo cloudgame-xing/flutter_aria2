@@ -9,6 +9,7 @@
 #include <thread>
 
 #include <aria2_c_api.h>
+#include "../common/aria2_core.h"
 
 namespace flutter_aria2 {
 
@@ -30,15 +31,12 @@ class FlutterAria2Plugin : public flutter::Plugin {
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
  private:
-  aria2_session_t* session_ = nullptr;
-  bool library_initialized_ = false;
-
-  // ── Background run loop (ARIA2_RUN_DEFAULT) ──
-  std::thread run_thread_;
-  std::atomic<bool> run_loop_active_{false};
-
-  // Guards against concurrent one-shot aria2_run(ONCE) calls.
-  std::atomic<bool> run_in_progress_{false};
+  flutter_aria2::core::RuntimeState core_;
+  aria2_session_t*& session_ = core_.session;
+  bool& library_initialized_ = core_.library_initialized;
+  std::thread& run_thread_ = core_.run_thread;
+  std::atomic<bool>& run_loop_active_ = core_.run_loop_active;
+  std::atomic<bool>& run_in_progress_ = core_.run_in_progress;
 
   // Stop the background run loop (if active) and block until it exits.
   void StopRunLoop();

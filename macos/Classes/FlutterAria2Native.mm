@@ -1,9 +1,10 @@
 #import "FlutterAria2Native.h"
 
 #include <aria2_c_api.h>
+#include "../../common/aria2_core.h"
+#include "../../common/aria2_helpers.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -16,6 +17,29 @@ namespace {
 
 using Dict = NSDictionary<NSString*, id>*;
 using Array = NSArray*;
+
+flutter_aria2::core::RuntimeState TakeCoreState(
+    aria2_session_t*& session, BOOL& libraryInitialized, std::thread& runThread,
+    std::atomic<bool>& runLoopActive, std::atomic<bool>& runInProgress) {
+  flutter_aria2::core::RuntimeState core;
+  core.session = session;
+  core.library_initialized = libraryInitialized;
+  core.run_thread = std::move(runThread);
+  core.run_loop_active.store(runLoopActive.load());
+  core.run_in_progress.store(runInProgress.load());
+  return core;
+}
+
+void PutCoreState(aria2_session_t*& session, BOOL& libraryInitialized,
+                  std::thread& runThread, std::atomic<bool>& runLoopActive,
+                  std::atomic<bool>& runInProgress,
+                  flutter_aria2::core::RuntimeState&& core) {
+  session = core.session;
+  libraryInitialized = core.library_initialized ? YES : NO;
+  runThread = std::move(core.run_thread);
+  runLoopActive.store(core.run_loop_active.load());
+  runInProgress.store(core.run_in_progress.load());
+}
 
 NSError* MakeError(NSString* code, NSString* message) {
   return [NSError errorWithDomain:FlutterAria2NativeErrorDomain
@@ -116,15 +140,6 @@ KeyValHelper OptionsFromArgs(Dict args, NSString* key) {
   return kv;
 }
 
-std::string GidToHex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result = hex == nullptr ? "" : hex;
-  if (hex != nullptr) {
-    aria2_free(hex);
-  }
-  return result;
-}
-
 NSDictionary* FileDataToNSDictionary(const aria2_file_data_t& file) {
   NSMutableArray* uris = [NSMutableArray array];
   for (size_t i = 0; i < file.uris_count; ++i) {
@@ -170,50 +185,43 @@ NSDictionary* FileDataToNSDictionary(const aria2_file_data_t& file) {
 }
 
 - (void)dealloc {
-  [self stopRunLoopInternal];
-  [self waitForPendingRun];
-
-  if (_session != nullptr) {
-    aria2_session_final(_session);
-    _session = nullptr;
-  }
-  if (_libraryInitialized) {
-    aria2_library_deinit();
-    _libraryInitialized = NO;
-  }
+  auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                            _runLoopActive, _runInProgress);
+  flutter_aria2::core::CleanupState(&core);
+  PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+               _runInProgress, std::move(core));
 }
 
 - (void)waitForPendingRun {
-  while (_runInProgress.load()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                            _runLoopActive, _runInProgress);
+  flutter_aria2::core::WaitForPendingRun(&core);
+  PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+               _runInProgress, std::move(core));
 }
 
 - (void)stopRunLoopInternal {
-  if (!_runLoopActive.load()) {
-    return;
-  }
-  _runLoopActive.store(false);
-  if (_session != nullptr) {
-    aria2_shutdown(_session, 1);
-  }
-  if (_runThread.joinable()) {
-    _runThread.join();
-  }
+  auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                            _runLoopActive, _runInProgress);
+  flutter_aria2::core::StopRunLoop(&core);
+  PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+               _runInProgress, std::move(core));
 }
 
 static int DownloadEventCallback(aria2_session_t* /*session*/,
                                  aria2_download_event_t event,
                                  aria2_gid_t gid,
                                  void* user_data) {
-  auto* native = (__bridge FlutterAria2Native*)user_data;
-  if (native == nil) {
+  __weak FlutterAria2Native* weakNative = (__bridge __weak FlutterAria2Native*)user_data;
+  if (weakNative == nil) {
     return 0;
   }
 
-  NSString* gidHex = [NSString stringWithUTF8String:GidToHex(gid).c_str()];
+  NSString* gidHex = [NSString
+      stringWithUTF8String:flutter_aria2::common::GidToHex(gid).c_str()];
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (native.onDownloadEvent == nil) {
+    FlutterAria2Native* native = weakNative;
+    if (native == nil || native.onDownloadEvent == nil) {
       return;
     }
     native.onDownloadEvent(static_cast<NSInteger>(event), gidHex);
@@ -231,20 +239,20 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
     return;
   }
   if ([method isEqualToString:@"libraryInit"]) {
-    int ret = aria2_library_init();
-    if (ret == 0) _libraryInitialized = YES;
+    auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                              _runLoopActive, _runInProgress);
+    int ret = flutter_aria2::core::LibraryInit(&core);
+    PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+                 _runInProgress, std::move(core));
     completion(@(ret), nil);
     return;
   }
   if ([method isEqualToString:@"libraryDeinit"]) {
-    [self stopRunLoopInternal];
-    [self waitForPendingRun];
-    if (_session != nullptr) {
-      aria2_session_final(_session);
-      _session = nullptr;
-    }
-    int ret = aria2_library_deinit();
-    _libraryInitialized = NO;
+    auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                              _runLoopActive, _runInProgress);
+    int ret = flutter_aria2::core::LibraryDeinit(&core);
+    PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+                 _runInProgress, std::move(core));
     completion(@(ret), nil);
     return;
   }
@@ -259,13 +267,14 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
     }
     KeyValHelper options = OptionsFromArgs(args, @"options");
     bool keepRunning = MapGetBool(args, @"keepRunning", true);
-    aria2_session_config_t config;
-    aria2_session_config_init(&config);
-    config.keep_running = keepRunning ? 1 : 0;
-    config.download_event_callback = &DownloadEventCallback;
-    config.user_data = (__bridge void*)self;
-    _session = aria2_session_new(options.data(), options.count(), &config);
-    if (_session == nullptr) {
+    auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                              _runLoopActive, _runInProgress);
+    const char* error = flutter_aria2::core::SessionNew(
+        &core, options.data(), options.count(), keepRunning,
+        &DownloadEventCallback, (__bridge void*)self);
+    PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+                 _runInProgress, std::move(core));
+    if (error != nullptr) {
       completion(nil, MakeError(@"SESSION_FAILED", @"aria2_session_new returned null"));
       return;
     }
@@ -277,10 +286,12 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
       completion(nil, MakeError(@"NO_SESSION", @"No active session"));
       return;
     }
-    [self stopRunLoopInternal];
-    [self waitForPendingRun];
-    int ret = aria2_session_final(_session);
-    _session = nullptr;
+    auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                              _runLoopActive, _runInProgress);
+    int ret = 0;
+    flutter_aria2::core::SessionFinal(&core, &ret);
+    PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+                 _runInProgress, std::move(core));
     completion(@(ret), nil);
     return;
   }
@@ -319,16 +330,11 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
       completion(nil, nil);
       return;
     }
-    _runLoopActive.store(true);
-    aria2_session_t* session = _session;
-    if (_runThread.joinable()) {
-      _runThread.join();
-    }
-    FlutterAria2Native* native = self;
-    _runThread = std::thread([native, session]() {
-      aria2_run(session, ARIA2_RUN_DEFAULT);
-      native->_runLoopActive.store(false);
-    });
+    auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                              _runLoopActive, _runInProgress);
+    flutter_aria2::core::StartRunLoop(&core);
+    PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+                 _runInProgress, std::move(core));
     completion(nil, nil);
     return;
   }
@@ -343,7 +349,13 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
       return;
     }
     int force = MapGetBool(args, @"force", false) ? 1 : 0;
-    completion(@(aria2_shutdown(_session, force)), nil);
+    auto core = TakeCoreState(_session, _libraryInitialized, _runThread,
+                              _runLoopActive, _runInProgress);
+    int ret = 0;
+    flutter_aria2::core::Shutdown(&core, force != 0, &ret);
+    PutCoreState(_session, _libraryInitialized, _runThread, _runLoopActive,
+                 _runInProgress, std::move(core));
+    completion(@(ret), nil);
     return;
   }
   if ([method isEqualToString:@"addUri"]) {
@@ -374,7 +386,9 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
     int ret = aria2_add_uri(_session, &gid, uriPtrs.data(), uriPtrs.size(),
                             options.data(), options.count(), position);
     if (ret == 0) {
-      completion([NSString stringWithUTF8String:GidToHex(gid).c_str()], nil);
+      completion([NSString stringWithUTF8String:flutter_aria2::common::GidToHex(gid)
+                                                .c_str()],
+                 nil);
     } else {
       completion(nil, MakeError(@"ARIA2_ERROR", [NSString stringWithFormat:@"aria2_add_uri failed with code %d", ret]));
     }
@@ -411,7 +425,9 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
                                       wsPtrs.data(), wsPtrs.size(),
                                       options.data(), options.count(), position);
     if (ret == 0) {
-      completion([NSString stringWithUTF8String:GidToHex(gid).c_str()], nil);
+      completion([NSString stringWithUTF8String:flutter_aria2::common::GidToHex(gid)
+                                                .c_str()],
+                 nil);
     } else {
       completion(nil, MakeError(@"ARIA2_ERROR", [NSString stringWithFormat:@"aria2_add_torrent failed with code %d", ret]));
     }
@@ -432,7 +448,9 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
     if (ret == 0) {
       NSMutableArray* gidList = [NSMutableArray array];
       for (size_t i = 0; i < gidsCount; ++i) {
-        [gidList addObject:[NSString stringWithUTF8String:GidToHex(gids[i]).c_str()]];
+        [gidList addObject:[NSString
+                               stringWithUTF8String:flutter_aria2::common::GidToHex(gids[i])
+                                                        .c_str()]];
       }
       if (gids != nullptr) aria2_free(gids);
       completion(gidList, nil);
@@ -453,7 +471,9 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
     if (ret == 0) {
       NSMutableArray* gidList = [NSMutableArray array];
       for (size_t i = 0; i < gidsCount; ++i) {
-        [gidList addObject:[NSString stringWithUTF8String:GidToHex(gids[i]).c_str()]];
+        [gidList addObject:[NSString
+                               stringWithUTF8String:flutter_aria2::common::GidToHex(gids[i])
+                                                        .c_str()]];
       }
       if (gids != nullptr) aria2_free(gids);
       completion(gidList, nil);
@@ -625,13 +645,22 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
     NSMutableArray* followedBy = [NSMutableArray array];
     if (aria2_download_handle_get_followed_by(dh, &followedByGids, &followedByCount) == 0) {
       for (size_t i = 0; i < followedByCount; ++i) {
-        [followedBy addObject:[NSString stringWithUTF8String:GidToHex(followedByGids[i]).c_str()]];
+        [followedBy addObject:[NSString
+                                  stringWithUTF8String:flutter_aria2::common::GidToHex(
+                                                           followedByGids[i])
+                                                           .c_str()]];
       }
       if (followedByGids != nullptr) aria2_free(followedByGids);
     }
     map[@"followedBy"] = followedBy;
-    map[@"following"] = [NSString stringWithUTF8String:GidToHex(aria2_download_handle_get_following(dh)).c_str()];
-    map[@"belongsTo"] = [NSString stringWithUTF8String:GidToHex(aria2_download_handle_get_belongs_to(dh)).c_str()];
+    map[@"following"] = [NSString
+        stringWithUTF8String:flutter_aria2::common::GidToHex(
+                                 aria2_download_handle_get_following(dh))
+                                 .c_str()];
+    map[@"belongsTo"] = [NSString
+        stringWithUTF8String:flutter_aria2::common::GidToHex(
+                                 aria2_download_handle_get_belongs_to(dh))
+                                 .c_str()];
 
     char* dir = aria2_download_handle_get_dir(dh);
     map[@"dir"] = [NSString stringWithUTF8String:dir == nullptr ? "" : dir];
