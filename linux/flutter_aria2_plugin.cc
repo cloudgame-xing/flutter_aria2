@@ -184,12 +184,6 @@ void put_core_state(FlutterAria2Plugin* self,
   self->run_in_progress.store(core.run_in_progress.load());
 }
 
-void wait_for_pending_run(FlutterAria2Plugin* self) {
-  auto core = take_core_state(self);
-  flutter_aria2::core::WaitForPendingRun(&core);
-  put_core_state(self, std::move(core));
-}
-
 void stop_run_loop(FlutterAria2Plugin* self) {
   auto core = take_core_state(self);
   flutter_aria2::core::StopRunLoop(&core);
