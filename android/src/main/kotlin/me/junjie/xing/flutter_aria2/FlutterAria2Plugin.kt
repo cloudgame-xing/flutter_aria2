@@ -10,14 +10,12 @@ import io.flutter.plugin.common.MethodChannel.Result
 class FlutterAria2Plugin :
     FlutterPlugin,
     MethodCallHandler {
-    // The MethodChannel that will the communication between Flutter and native Android
-    //
-    // This local reference serves to register the plugin with the Flutter Engine and unregister it
-    // when the Flutter Engine is detached from the Activity
     private lateinit var channel: MethodChannel
+    private lateinit var nativeManager: Aria2NativeManager
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "flutter_aria2")
+        nativeManager = Aria2NativeManager(channel)
         channel.setMethodCallHandler(this)
     }
 
@@ -25,14 +23,21 @@ class FlutterAria2Plugin :
         call: MethodCall,
         result: Result
     ) {
-        if (call.method == "getPlatformVersion") {
-            result.success("Android ${android.os.Build.VERSION.RELEASE}")
-        } else {
-            result.notImplemented()
+        try {
+            val value = nativeManager.invoke(
+                call.method,
+                call.arguments as? Map<String, Any?>
+            )
+            result.success(value)
+        } catch (e: Aria2NativeException) {
+            result.error(e.code, e.message, null)
+        } catch (e: IllegalArgumentException) {
+            result.error("BAD_ARGS", e.message, null)
         }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        nativeManager.dispose()
     }
 }

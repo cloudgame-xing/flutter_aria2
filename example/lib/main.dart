@@ -181,24 +181,28 @@ class _DownloadPageState extends State<DownloadPage> {
         final d = Directory(dir);
         if (!d.existsSync()) d.createSync(recursive: true);
       }
+      final needCustomCa = Platform.isIOS || Platform.isAndroid;
       String? caCertificatePath;
-      if (Platform.isIOS) {
+      if (needCustomCa) {
         caCertificatePath = await _ensureCaCertificatePath();
       }
+
+      const maxConnPerServer = '16';
+      const splitCount = '16';
 
       await _aria2.sessionNew(
         options: {
           if (dir.isNotEmpty) 'dir': dir,
-          if (Platform.isIOS && caCertificatePath != null)
+          if (needCustomCa && caCertificatePath != null)
             'ca-certificate': caCertificatePath,
           // 避免同名文件/断点文件导致创建或截断失败。
           'allow-overwrite': 'true',
           'auto-file-renaming': 'true',
           'continue': 'true',
-          if (Platform.isIOS) 'check-certificate': 'true',
+          if (needCustomCa) 'check-certificate': 'true',
           // ── 性能选项 ──
-          'max-connection-per-server': '16', // 每个服务器最大连接数（默认1）
-          'split': '16',                     // 将文件分为N段并行下载
+          'max-connection-per-server': maxConnPerServer, // 每个服务器最大连接数（默认1）
+          'split': splitCount,               // 将文件分为N段并行下载
           'min-split-size': '1M',            // 最小分段大小
           'max-concurrent-downloads': '5',   // 最大同时下载任务数
           // ── BT 选项 ──

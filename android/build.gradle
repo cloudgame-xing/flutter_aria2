@@ -40,11 +40,22 @@ android {
 
     sourceSets {
         main.java.srcDirs += "src/main/kotlin"
+        debug.jniLibs.srcDirs += "${buildDir}/generated/jniLibs/debug"
+        release.jniLibs.srcDirs += "${buildDir}/generated/jniLibs/release"
         test.java.srcDirs += "src/test/kotlin"
     }
 
     defaultConfig {
         minSdk = 24
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("CMakeLists.txt")
+        }
     }
 
     dependencies {
@@ -63,4 +74,18 @@ android {
             }
         }
     }
+}
+
+tasks.register("prepareAria2DebugJniLibs", Copy) {
+    from("aria2lib/Debug/lib/libaria2_c_api.so")
+    into("${buildDir}/generated/jniLibs/debug/arm64-v8a")
+}
+
+tasks.register("prepareAria2ReleaseJniLibs", Copy) {
+    from("aria2lib/Release/lib/libaria2_c_api.so")
+    into("${buildDir}/generated/jniLibs/release/arm64-v8a")
+}
+
+tasks.named("preBuild") {
+    dependsOn("prepareAria2DebugJniLibs", "prepareAria2ReleaseJniLibs")
 }
