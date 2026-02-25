@@ -24,6 +24,7 @@ set(PLUGIN_NAME "flutter_aria2_plugin")
 list(APPEND PLUGIN_SOURCES
   "flutter_aria2_plugin.cc"
   "../common/aria2_core.cpp"
+  "../common/aria2_helpers.cpp"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment

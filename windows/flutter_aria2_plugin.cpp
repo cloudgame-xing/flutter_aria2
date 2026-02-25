@@ -1,4 +1,5 @@
 #include "flutter_aria2_plugin.h"
+#include "../common/aria2_helpers.h"
 
 #include <windows.h>
 #include <VersionHelpers.h>
@@ -97,14 +98,6 @@ KeyValHelper OptionsFromMap(const EMap& args, const std::string& key) {
   return kv;
 }
 
-// GID ↔ hex conversion wrapper (frees C-allocated memory).
-std::string GidToHex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result(hex ? hex : "");
-  if (hex) aria2_free(hex);
-  return result;
-}
-
 // Convert aria2_file_data_t → EncodableValue (map).
 EV FileDataToEncodable(const aria2_file_data_t& f) {
   EMap m;
@@ -181,7 +174,7 @@ int FlutterAria2Plugin::DownloadEventCallback(
   if (instance_ && instance_->channel_) {
     EMap data;
     data[EV("event")] = EV(static_cast<int32_t>(event));
-    data[EV("gid")]   = EV(GidToHex(gid));
+    data[EV("gid")] = EV(flutter_aria2::common::GidToHex(gid));
     instance_->channel_->InvokeMethod(
         "onDownloadEvent",
         std::make_unique<EV>(data));
@@ -388,7 +381,7 @@ void FlutterAria2Plugin::HandleMethodCall(
                             options.data(), options.count(),
                             position);
     if (ret == 0) {
-      result->Success(EV(GidToHex(gid)));
+      result->Success(EV(flutter_aria2::common::GidToHex(gid)));
     } else {
       result->Error("ARIA2_ERROR",
                     "aria2_add_uri failed with code " + std::to_string(ret));
@@ -442,7 +435,7 @@ void FlutterAria2Plugin::HandleMethodCall(
     }
 
     if (ret == 0) {
-      result->Success(EV(GidToHex(gid)));
+      result->Success(EV(flutter_aria2::common::GidToHex(gid)));
     } else {
       result->Error("ARIA2_ERROR",
                     "aria2_add_torrent failed with code " +
@@ -474,7 +467,7 @@ void FlutterAria2Plugin::HandleMethodCall(
     if (ret == 0) {
       EList gid_list;
       for (size_t i = 0; i < gids_count; ++i) {
-        gid_list.push_back(EV(GidToHex(gids[i])));
+        gid_list.push_back(EV(flutter_aria2::common::GidToHex(gids[i])));
       }
       if (gids) aria2_free(gids);
       result->Success(EV(gid_list));
@@ -502,7 +495,7 @@ void FlutterAria2Plugin::HandleMethodCall(
     if (ret == 0) {
       EList gid_list;
       for (size_t i = 0; i < gids_count; ++i) {
-        gid_list.push_back(EV(GidToHex(gids[i])));
+        gid_list.push_back(EV(flutter_aria2::common::GidToHex(gids[i])));
       }
       if (gids) aria2_free(gids);
       result->Success(EV(gid_list));
@@ -736,15 +729,15 @@ void FlutterAria2Plugin::HandleMethodCall(
     EList followed_by;
     if (aria2_download_handle_get_followed_by(dh, &fb_gids, &fb_count) == 0) {
       for (size_t i = 0; i < fb_count; ++i) {
-        followed_by.push_back(EV(GidToHex(fb_gids[i])));
+        followed_by.push_back(EV(flutter_aria2::common::GidToHex(fb_gids[i])));
       }
       if (fb_gids) aria2_free(fb_gids);
     }
     m[EV("followedBy")] = EV(followed_by);
 
-    m[EV("following")] = EV(GidToHex(
+    m[EV("following")] = EV(flutter_aria2::common::GidToHex(
         aria2_download_handle_get_following(dh)));
-    m[EV("belongsTo")] = EV(GidToHex(
+    m[EV("belongsTo")] = EV(flutter_aria2::common::GidToHex(
         aria2_download_handle_get_belongs_to(dh)));
 
     char* dir = aria2_download_handle_get_dir(dh);

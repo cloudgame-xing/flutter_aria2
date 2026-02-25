@@ -2,6 +2,7 @@
 
 #include <aria2_c_api.h>
 #include "common/aria2_core.h"
+#include "common/aria2_helpers.h"
 
 #include <atomic>
 #include <chrono>
@@ -235,13 +236,6 @@ KeyValHelper OptionsFromArgs(JNIEnv* env, jobject args, const char* key) {
   return helper;
 }
 
-std::string GidToHex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result = hex == nullptr ? "" : hex;
-  if (hex != nullptr) aria2_free(hex);
-  return result;
-}
-
 void ThrowAria2Error(JNIEnv* env, const std::string& code,
                      const std::string& message) {
   if (env->ExceptionCheck()) return;
@@ -306,7 +300,7 @@ int DownloadEventCallback(aria2_session_t* /*session*/,
                           aria2_download_event_t event,
                           aria2_gid_t gid,
                           void* /*user_data*/) {
-  EmitDownloadEvent(event, GidToHex(gid));
+  EmitDownloadEvent(event, flutter_aria2::common::GidToHex(gid));
   return 0;
 }
 
@@ -440,7 +434,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
                       "aria2_add_uri failed with code " + std::to_string(ret));
       return nullptr;
     }
-    return NewString(env, GidToHex(gid));
+    return NewString(env, flutter_aria2::common::GidToHex(gid));
   }
 
   if (method == "addTorrent") {
@@ -474,7 +468,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
                       "aria2_add_torrent failed with code " + std::to_string(ret));
       return nullptr;
     }
-    return NewString(env, GidToHex(gid));
+    return NewString(env, flutter_aria2::common::GidToHex(gid));
   }
 
   if (method == "addMetalink") {
@@ -499,7 +493,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
     jobject list = NewArrayList(env);
     for (size_t i = 0; i < gids_count; ++i) {
-      jobject gid_obj = NewString(env, GidToHex(gids[i]));
+        jobject gid_obj =
+            NewString(env, flutter_aria2::common::GidToHex(gids[i]));
       ArrayListAdd(env, list, gid_obj);
       env->DeleteLocalRef(gid_obj);
     }
@@ -524,7 +519,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
     jobject list = NewArrayList(env);
     for (size_t i = 0; i < gids_count; ++i) {
-      jobject gid_obj = NewString(env, GidToHex(gids[i]));
+        jobject gid_obj =
+            NewString(env, flutter_aria2::common::GidToHex(gids[i]));
       ArrayListAdd(env, list, gid_obj);
       env->DeleteLocalRef(gid_obj);
     }
@@ -717,7 +713,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     jobject followed_list = NewArrayList(env);
     if (aria2_download_handle_get_followed_by(dh, &followed_by, &followed_count) == 0) {
       for (size_t i = 0; i < followed_count; ++i) {
-        jobject gid_obj = NewString(env, GidToHex(followed_by[i]));
+        jobject gid_obj =
+            NewString(env, flutter_aria2::common::GidToHex(followed_by[i]));
         ArrayListAdd(env, followed_list, gid_obj);
         env->DeleteLocalRef(gid_obj);
       }
@@ -727,9 +724,11 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     env->DeleteLocalRef(followed_list);
 
     HashMapPut(env, map, NewString(env, "following"),
-               NewString(env, GidToHex(aria2_download_handle_get_following(dh))));
+               NewString(env, flutter_aria2::common::GidToHex(
+                                   aria2_download_handle_get_following(dh))));
     HashMapPut(env, map, NewString(env, "belongsTo"),
-               NewString(env, GidToHex(aria2_download_handle_get_belongs_to(dh))));
+               NewString(env, flutter_aria2::common::GidToHex(
+                                   aria2_download_handle_get_belongs_to(dh))));
 
     char* dir = aria2_download_handle_get_dir(dh);
     HashMapPut(env, map, NewString(env, "dir"), NewString(env, dir == nullptr ? "" : dir));

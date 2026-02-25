@@ -58,6 +58,7 @@ add_library(
   SHARED
   src/main/cpp/flutter_aria2_native_jni.cpp
   ../common/aria2_core.cpp
+  ../common/aria2_helpers.cpp
 )
 
 target_include_directories(

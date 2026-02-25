@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "../common/aria2_core.h"
+#include "../common/aria2_helpers.h"
 #include "flutter_aria2_plugin_private.h"
 
 #define FLUTTER_ARIA2_PLUGIN(obj) \
@@ -105,15 +106,6 @@ KeyValHelper options_from_map(FlValue* args, const gchar* key) {
   KeyValHelper kv;
   kv.from_map(map_get(args, key));
   return kv;
-}
-
-std::string gid_to_hex(aria2_gid_t gid) {
-  char* hex = aria2_gid_to_hex(gid);
-  std::string result = hex == nullptr ? "" : hex;
-  if (hex != nullptr) {
-    aria2_free(hex);
-  }
-  return result;
 }
 
 FlValue* file_data_to_fl_value(const aria2_file_data_t& file) {
@@ -209,7 +201,7 @@ int download_event_callback(aria2_session_t* /*session*/,
   auto* payload = new EventPayload{
       plugin,
       static_cast<int>(event),
-      gid_to_hex(gid),
+      flutter_aria2::common::GidToHex(gid),
   };
   g_main_context_invoke(nullptr, send_download_event_on_main, payload);
   return 0;
@@ -334,7 +326,8 @@ static void flutter_aria2_plugin_handle_method_call(
                                 uri_ptrs.size(), options.data(), options.count(),
                                 position);
         if (ret == 0) {
-          response = success_response(fl_value_new_string(gid_to_hex(gid).c_str()));
+          response = success_response(fl_value_new_string(
+              flutter_aria2::common::GidToHex(gid).c_str()));
         } else {
           g_autofree gchar* message =
               g_strdup_printf("aria2_add_uri failed with code %d", ret);
@@ -376,7 +369,8 @@ static void flutter_aria2_plugin_handle_method_call(
                                         ws_ptrs.data(), ws_ptrs.size(),
                                         options.data(), options.count(), position);
       if (ret == 0) {
-        response = success_response(fl_value_new_string(gid_to_hex(gid).c_str()));
+        response = success_response(fl_value_new_string(
+            flutter_aria2::common::GidToHex(gid).c_str()));
       } else {
         g_autofree gchar* message =
             g_strdup_printf("aria2_add_torrent failed with code %d", ret);
@@ -398,7 +392,9 @@ static void flutter_aria2_plugin_handle_method_call(
       if (ret == 0) {
         FlValue* gid_list = fl_value_new_list();
         for (size_t i = 0; i < gids_count; ++i) {
-          fl_value_append(gid_list, fl_value_new_string(gid_to_hex(gids[i]).c_str()));
+          fl_value_append(
+              gid_list, fl_value_new_string(
+                            flutter_aria2::common::GidToHex(gids[i]).c_str()));
         }
         if (gids != nullptr) {
           aria2_free(gids);
@@ -423,7 +419,9 @@ static void flutter_aria2_plugin_handle_method_call(
       if (ret == 0) {
         FlValue* gid_list = fl_value_new_list();
         for (size_t i = 0; i < gids_count; ++i) {
-          fl_value_append(gid_list, fl_value_new_string(gid_to_hex(gids[i]).c_str()));
+          fl_value_append(
+              gid_list, fl_value_new_string(
+                            flutter_aria2::common::GidToHex(gids[i]).c_str()));
         }
         if (gids != nullptr) {
           aria2_free(gids);
@@ -622,7 +620,8 @@ static void flutter_aria2_plugin_handle_method_call(
           for (size_t i = 0; i < followed_count; ++i) {
             fl_value_append(
                 followed_list,
-                fl_value_new_string(gid_to_hex(followed_by[i]).c_str()));
+                fl_value_new_string(
+                    flutter_aria2::common::GidToHex(followed_by[i]).c_str()));
           }
           if (followed_by != nullptr) {
             aria2_free(followed_by);
@@ -632,11 +631,15 @@ static void flutter_aria2_plugin_handle_method_call(
         fl_value_set_string(
             map, "following",
             fl_value_new_string(
-                gid_to_hex(aria2_download_handle_get_following(handle)).c_str()));
+                flutter_aria2::common::GidToHex(
+                    aria2_download_handle_get_following(handle))
+                    .c_str()));
         fl_value_set_string(
             map, "belongsTo",
             fl_value_new_string(
-                gid_to_hex(aria2_download_handle_get_belongs_to(handle)).c_str()));
+                flutter_aria2::common::GidToHex(
+                    aria2_download_handle_get_belongs_to(handle))
+                    .c_str()));
 
         char* dir = aria2_download_handle_get_dir(handle);
         fl_value_set_string(map, "dir",

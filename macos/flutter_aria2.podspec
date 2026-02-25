@@ -14,7 +14,7 @@ A new Flutter plugin project.
   s.author           = { 'Your Company' => 'email@example.com' }
 
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*.{h,m,mm,swift}'
+  s.source_files     = 'Classes/**/*.{h,m,mm,swift}', '../common/aria2_core.cpp', '../common/aria2_core.h', '../common/aria2_helpers.cpp', '../common/aria2_helpers.h'
   s.preserve_paths   = 'aria2lib/**/*'
   s.vendored_libraries = 'aria2lib/Release/lib/libaria2_c_api.dylib'
 
