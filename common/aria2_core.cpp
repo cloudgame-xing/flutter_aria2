@@ -83,6 +83,8 @@ const char* SessionFinal(RuntimeState* state, int* out_ret) {
   if (state->session == nullptr) {
     return "NO_SESSION";
   }
+  // Lifecycle order: stop run loop (and join thread) -> wait pending run -> session final.
+  // This ensures no callbacks run after session is torn down.
   StopRunLoop(state);
   WaitForPendingRun(state);
   const int ret = aria2_session_final(state->session);
@@ -161,6 +163,7 @@ void CleanupState(RuntimeState* state) {
   if (state == nullptr) {
     return;
   }
+  // Same order as SessionFinal: stop run loop -> wait -> finalize session -> deinit library.
   StopRunLoop(state);
   WaitForPendingRun(state);
   if (state->session != nullptr) {

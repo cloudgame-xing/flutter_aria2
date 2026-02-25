@@ -90,7 +90,7 @@
 
 ## C. 内存/资源泄漏与生命周期风险
 
-### C1（高）Android JNI 局部引用管理粗放（大数据场景风险高）
+### C1（高）Android JNI 局部引用管理粗放（大数据场景风险高）✅ 已处理
 
 - 文件：`android/src/main/cpp/flutter_aria2_native_jni.cpp`
 - 现象：
@@ -98,12 +98,14 @@
   - 在 `getDownloadInfo/getDownloadFiles/getDownloadOptions` 等循环/批量构建 map/list 逻辑中，局部引用数量可能快速增长。
 - 说明：
   - JNI 局部引用通常在 native 方法返回时清理，但在**单次调用内部大量创建**时仍可能触发 local reference table overflow。
-- 建议：
-  - 对循环内创建的临时 `jobject/jclass/jstring` 显式释放；
-  - 使用 RAII 封装 JNI 局部引用（例如 `LocalRef` 包装）；
-  - 对批量场景增加压力测试。
+- **已做修改**：
+  - 增加 RAII 辅助类型 `ScopedLocalRef`（析构时自动 `DeleteLocalRef`），便于后续扩展；
+  - 在 `FileDataToJavaMap`、`getGlobalOptions`、`getGlobalStat`、`getDownloadInfo`、`getDownloadOptions`、`getDownloadBtMetaInfo` 等批量/循环路径中，对每次 `HashMapPut`/`ArrayListAdd` 使用的临时 key/value 在 put 后显式 `DeleteLocalRef`，避免单次调用内局部引用堆积。
+- 建议（可选）：
+  - 对批量场景增加压力测试；
+  - 使用 Memory Profiler / JNI local ref 监控做二次验证。
 
-### C2（高）iOS/macOS 回调持有 `self` 的生命周期边界不够安全
+### C2（高）iOS/macOS 回调持有 `self` 的生命周期边界不够安全 ✅ 已处理
 
 - 文件：
   - `ios/Classes/FlutterAria2Native.mm`
@@ -113,25 +115,26 @@
   - 回调和线程 lambda 中直接使用 `native/self` 指针。
 - 风险：
   - 若析构、停止回调、线程退出顺序边界控制不严，存在悬挂引用访问风险（极端并发/销毁时序下）。
-- 建议：
-  - 采用更清晰的持有/释放策略（如 retain/release 对称，或独立回调上下文对象）；
-  - 明确“先停回调 -> 再停线程 -> 再释放对象”的强约束，并在代码中集中实现。
+- **已做修改**：
+  - 在 `DownloadEventCallback` 中改为使用 `__weak FlutterAria2Native* weakNative = (__bridge __weak FlutterAria2Native*)user_data`，在 `dispatch_async` 的 block 内先取 strong 引用再使用，若对象已释放则 `weakNative == nil` 时直接 return，避免悬挂指针。
+- 说明：
+  - 共享 core 中 `SessionFinal`/`CleanupState` 已保证“先 StopRunLoop（停线程）-> WaitForPendingRun -> session_final”，回调在 session 销毁后不再被调用；`__weak` 主要防护“block 尚未执行时对象已被释放”的边界情况。
 
-### C3（中）`run_in_progress` 重置依赖 happy path
+### C3（中）`run_in_progress` 重置依赖 happy path ✅ 已由共享 Core 覆盖
 
-- 文件：`android/src/main/cpp/flutter_aria2_native_jni.cpp`
-- 现象：`run()` 中 `run_in_progress=true` 后直接调用 `aria2_run(...)`，缺少统一 finally/guard 语义。
-- 风险：异常路径（包括未来改动引入的早退）可能导致标志位无法复位。
-- 建议：
-  - 使用作用域守卫（RAII guard）保证退出必复位；
-  - iOS/macOS 已对 `run` 做了 try-catch，Android 侧建议同等处理。
+- 文件：`common/aria2_core.cpp`（Android 通过 `RunOnce(state)` 调用）
+- 现象：原 Android 侧 `run()` 中 `run_in_progress=true` 后直接调用 `aria2_run(...)`，缺少统一 finally/guard 语义。
+- **现状**：
+  - 共享 core 中 `RunOnce` 已使用 `RunInProgressGuard`（RAII）在作用域结束时复位 `run_in_progress`，异常/早退路径也会正确复位，Android 侧无需额外修改。
 
-### C4（中）线程退出与销毁流程建议进一步规范化
+### C4（中）线程退出与销毁流程建议进一步规范化 ✅ 已明确并注释
 
-- 文件：多平台 run-loop 实现（Android/iOS/macOS/Linux/Windows）
-- 现象：存在 `stop -> shutdown -> join` 模式，但各平台细节不同。
-- 建议：
-  - 明确统一流程模板并复用；
+- 文件：`common/aria2_core.cpp`，多平台通过 core 复用。
+- 现象：存在 `stop -> shutdown -> join` 模式，各平台细节曾不完全一致。
+- **已做修改**：
+  - 在 `SessionFinal`、`CleanupState` 中补充注释，明确统一流程：**StopRunLoop（停线程并 join）-> WaitForPendingRun -> session_final（及 library_deinit）**；
+  - 各平台（Android/iOS/macOS/Linux/Windows）均通过 `CleanupState`/`SessionFinal`/`StopRunLoop` 使用该流程。
+- 建议（可选）：
   - 为重复 stop 调用、并发 stop/start 添加测试。
 
 ---
@@ -193,6 +196,8 @@
 - 第 1 阶段（1~2 周）：错误处理统一 + JNI 引用管理 + 测试基线。
 - 第 2 阶段（2~4 周）：抽取共享 Core + iOS/macOS 合并。
 - 第 3 阶段（1 周）：CI 与文档完善、发布前回归验证。
+
+**C 节整改记录（2026-02-25）**：本节“内存/资源泄漏与生命周期风险”已按 C1～C4 完成代码修改：JNI 批量路径显式释放局部引用、iOS/macOS 回调使用 `__weak`、run_in_progress 由共享 Core 的 RAII 覆盖、线程退出/销毁顺序在 core 中注释明确并统一使用。
 
 ---
 

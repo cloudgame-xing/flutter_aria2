@@ -20,6 +20,21 @@ JavaVM* g_vm = nullptr;
 std::mutex g_event_sink_mutex;
 jobject g_event_sink = nullptr;  // Global ref to Aria2NativeManager.
 
+// RAII guard for JNI local refs to avoid local reference table overflow in loops.
+struct ScopedLocalRef {
+  JNIEnv* env = nullptr;
+  jobject ref = nullptr;
+  ScopedLocalRef(JNIEnv* e, jobject r) : env(e), ref(r) {}
+  ~ScopedLocalRef() {
+    if (env != nullptr && ref != nullptr) {
+      env->DeleteLocalRef(ref);
+    }
+  }
+  jobject get() const { return ref; }
+  ScopedLocalRef(const ScopedLocalRef&) = delete;
+  ScopedLocalRef& operator=(const ScopedLocalRef&) = delete;
+};
+
 constexpr const char* kErrorClassName =
     "me/junjie/xing/flutter_aria2/Aria2NativeException";
 
@@ -331,27 +346,67 @@ int DownloadEventCallback(aria2_session_t* /*session*/,
 
 jobject FileDataToJavaMap(JNIEnv* env, const aria2_file_data_t& file) {
   jobject file_map = NewHashMap(env);
-  HashMapPut(env, file_map, NewString(env, "index"), NewInteger(env, file.index));
-  HashMapPut(env, file_map, NewString(env, "path"),
-             NewString(env, file.path == nullptr ? "" : file.path));
-  HashMapPut(env, file_map, NewString(env, "length"),
-             NewLong(env, static_cast<int64_t>(file.length)));
-  HashMapPut(env, file_map, NewString(env, "completedLength"),
-             NewLong(env, static_cast<int64_t>(file.completed_length)));
-  HashMapPut(env, file_map, NewString(env, "selected"),
-             NewBoolean(env, file.selected != 0));
+  {
+    jobject k = NewString(env, "index");
+    jobject v = NewInteger(env, file.index);
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "path");
+    jobject v = NewString(env, file.path == nullptr ? "" : file.path);
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "length");
+    jobject v = NewLong(env, static_cast<int64_t>(file.length));
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "completedLength");
+    jobject v = NewLong(env, static_cast<int64_t>(file.completed_length));
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
+  {
+    jobject k = NewString(env, "selected");
+    jobject v = NewBoolean(env, file.selected != 0);
+    HashMapPut(env, file_map, k, v);
+    env->DeleteLocalRef(k);
+    env->DeleteLocalRef(v);
+  }
 
   jobject uris = NewArrayList(env);
   for (size_t i = 0; i < file.uris_count; ++i) {
     jobject uri_map = NewHashMap(env);
-    HashMapPut(env, uri_map, NewString(env, "uri"),
-               NewString(env, file.uris[i].uri == nullptr ? "" : file.uris[i].uri));
-    HashMapPut(env, uri_map, NewString(env, "status"),
-               NewInteger(env, static_cast<int>(file.uris[i].status)));
+    {
+      jobject k = NewString(env, "uri");
+      jobject v = NewString(env, file.uris[i].uri == nullptr ? "" : file.uris[i].uri);
+      HashMapPut(env, uri_map, k, v);
+      env->DeleteLocalRef(k);
+      env->DeleteLocalRef(v);
+    }
+    {
+      jobject k = NewString(env, "status");
+      jobject v = NewInteger(env, static_cast<int>(file.uris[i].status));
+      HashMapPut(env, uri_map, k, v);
+      env->DeleteLocalRef(k);
+      env->DeleteLocalRef(v);
+    }
     ArrayListAdd(env, uris, uri_map);
     env->DeleteLocalRef(uri_map);
   }
-  HashMapPut(env, file_map, NewString(env, "uris"), uris);
+  {
+    jobject k = NewString(env, "uris");
+    HashMapPut(env, file_map, k, uris);
+    env->DeleteLocalRef(k);
+  }
   env->DeleteLocalRef(uris);
   return file_map;
 }
@@ -590,8 +645,11 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
     jobject map = NewHashMap(env);
     for (size_t i = 0; i < count; ++i) {
-      HashMapPut(env, map, NewString(env, options[i].key == nullptr ? "" : options[i].key),
-                 NewString(env, options[i].value == nullptr ? "" : options[i].value));
+      jobject k = NewString(env, options[i].key == nullptr ? "" : options[i].key);
+      jobject v = NewString(env, options[i].value == nullptr ? "" : options[i].value);
+      HashMapPut(env, map, k, v);
+      env->DeleteLocalRef(k);
+      env->DeleteLocalRef(v);
     }
     if (options != nullptr) aria2_free_key_vals(options, count);
     return map;
@@ -609,16 +667,31 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     REQUIRE_SESSION();
     aria2_global_stat_t stat = aria2_get_global_stat(state->session);
     jobject map = NewHashMap(env);
-    HashMapPut(env, map, NewString(env, "downloadSpeed"),
-               NewLong(env, static_cast<int64_t>(stat.download_speed)));
-    HashMapPut(env, map, NewString(env, "uploadSpeed"),
-               NewLong(env, static_cast<int64_t>(stat.upload_speed)));
-    HashMapPut(env, map, NewString(env, "numActive"),
-               NewInteger(env, stat.num_active));
-    HashMapPut(env, map, NewString(env, "numWaiting"),
-               NewInteger(env, stat.num_waiting));
-    HashMapPut(env, map, NewString(env, "numStopped"),
-               NewInteger(env, stat.num_stopped));
+    jobject k1 = NewString(env, "downloadSpeed");
+    jobject v1 = NewLong(env, static_cast<int64_t>(stat.download_speed));
+    HashMapPut(env, map, k1, v1);
+    env->DeleteLocalRef(k1);
+    env->DeleteLocalRef(v1);
+    jobject k2 = NewString(env, "uploadSpeed");
+    jobject v2 = NewLong(env, static_cast<int64_t>(stat.upload_speed));
+    HashMapPut(env, map, k2, v2);
+    env->DeleteLocalRef(k2);
+    env->DeleteLocalRef(v2);
+    jobject k3 = NewString(env, "numActive");
+    jobject v3 = NewInteger(env, stat.num_active);
+    HashMapPut(env, map, k3, v3);
+    env->DeleteLocalRef(k3);
+    env->DeleteLocalRef(v3);
+    jobject k4 = NewString(env, "numWaiting");
+    jobject v4 = NewInteger(env, stat.num_waiting);
+    HashMapPut(env, map, k4, v4);
+    env->DeleteLocalRef(k4);
+    env->DeleteLocalRef(v4);
+    jobject k5 = NewString(env, "numStopped");
+    jobject v5 = NewInteger(env, stat.num_stopped);
+    HashMapPut(env, map, k5, v5);
+    env->DeleteLocalRef(k5);
+    env->DeleteLocalRef(v5);
     return map;
   }
 
@@ -634,19 +707,47 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     }
 
     jobject map = NewHashMap(env);
-    HashMapPut(env, map, NewString(env, "gid"), NewString(env, hex));
-    HashMapPut(env, map, NewString(env, "status"),
-               NewInteger(env, static_cast<int>(aria2_download_handle_get_status(dh))));
-    HashMapPut(env, map, NewString(env, "totalLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_total_length(dh))));
-    HashMapPut(env, map, NewString(env, "completedLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_completed_length(dh))));
-    HashMapPut(env, map, NewString(env, "uploadLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_length(dh))));
-    HashMapPut(env, map, NewString(env, "downloadSpeed"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_download_speed(dh))));
-    HashMapPut(env, map, NewString(env, "uploadSpeed"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_speed(dh))));
+    jobject k_gid = NewString(env, "gid");
+    jobject v_gid = NewString(env, hex);
+    HashMapPut(env, map, k_gid, v_gid);
+    env->DeleteLocalRef(k_gid);
+    env->DeleteLocalRef(v_gid);
+
+    jobject k_st = NewString(env, "status");
+    jobject v_st = NewInteger(env, static_cast<int>(aria2_download_handle_get_status(dh)));
+    HashMapPut(env, map, k_st, v_st);
+    env->DeleteLocalRef(k_st);
+    env->DeleteLocalRef(v_st);
+
+    jobject k_tl = NewString(env, "totalLength");
+    jobject v_tl = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_total_length(dh)));
+    HashMapPut(env, map, k_tl, v_tl);
+    env->DeleteLocalRef(k_tl);
+    env->DeleteLocalRef(v_tl);
+
+    jobject k_cl = NewString(env, "completedLength");
+    jobject v_cl = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_completed_length(dh)));
+    HashMapPut(env, map, k_cl, v_cl);
+    env->DeleteLocalRef(k_cl);
+    env->DeleteLocalRef(v_cl);
+
+    jobject k_ul = NewString(env, "uploadLength");
+    jobject v_ul = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_length(dh)));
+    HashMapPut(env, map, k_ul, v_ul);
+    env->DeleteLocalRef(k_ul);
+    env->DeleteLocalRef(v_ul);
+
+    jobject k_ds = NewString(env, "downloadSpeed");
+    jobject v_ds = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_download_speed(dh)));
+    HashMapPut(env, map, k_ds, v_ds);
+    env->DeleteLocalRef(k_ds);
+    env->DeleteLocalRef(v_ds);
+
+    jobject k_us = NewString(env, "uploadSpeed");
+    jobject v_us = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_upload_speed(dh)));
+    HashMapPut(env, map, k_us, v_us);
+    env->DeleteLocalRef(k_us);
+    env->DeleteLocalRef(v_us);
 
     aria2_binary_t ih = aria2_download_handle_get_info_hash(dh);
     if (ih.data != nullptr && ih.length > 0) {
@@ -656,20 +757,43 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
         std::snprintf(buf, sizeof(buf), "%02x", ih.data[i]);
         ss << buf;
       }
-      HashMapPut(env, map, NewString(env, "infoHash"), NewString(env, ss.str()));
+      jobject k_ih = NewString(env, "infoHash");
+      jobject v_ih = NewString(env, ss.str());
+      HashMapPut(env, map, k_ih, v_ih);
+      env->DeleteLocalRef(k_ih);
+      env->DeleteLocalRef(v_ih);
       aria2_free_binary(&ih);
     } else {
-      HashMapPut(env, map, NewString(env, "infoHash"), NewString(env, ""));
+      jobject k_ih = NewString(env, "infoHash");
+      jobject v_ih = NewString(env, "");
+      HashMapPut(env, map, k_ih, v_ih);
+      env->DeleteLocalRef(k_ih);
+      env->DeleteLocalRef(v_ih);
     }
 
-    HashMapPut(env, map, NewString(env, "pieceLength"),
-               NewLong(env, static_cast<int64_t>(aria2_download_handle_get_piece_length(dh))));
-    HashMapPut(env, map, NewString(env, "numPieces"),
-               NewInteger(env, aria2_download_handle_get_num_pieces(dh)));
-    HashMapPut(env, map, NewString(env, "connections"),
-               NewInteger(env, aria2_download_handle_get_connections(dh)));
-    HashMapPut(env, map, NewString(env, "errorCode"),
-               NewInteger(env, aria2_download_handle_get_error_code(dh)));
+    jobject k_pl = NewString(env, "pieceLength");
+    jobject v_pl = NewLong(env, static_cast<int64_t>(aria2_download_handle_get_piece_length(dh)));
+    HashMapPut(env, map, k_pl, v_pl);
+    env->DeleteLocalRef(k_pl);
+    env->DeleteLocalRef(v_pl);
+
+    jobject k_np = NewString(env, "numPieces");
+    jobject v_np = NewInteger(env, aria2_download_handle_get_num_pieces(dh));
+    HashMapPut(env, map, k_np, v_np);
+    env->DeleteLocalRef(k_np);
+    env->DeleteLocalRef(v_np);
+
+    jobject k_conn = NewString(env, "connections");
+    jobject v_conn = NewInteger(env, aria2_download_handle_get_connections(dh));
+    HashMapPut(env, map, k_conn, v_conn);
+    env->DeleteLocalRef(k_conn);
+    env->DeleteLocalRef(v_conn);
+
+    jobject k_ec = NewString(env, "errorCode");
+    jobject v_ec = NewInteger(env, aria2_download_handle_get_error_code(dh));
+    HashMapPut(env, map, k_ec, v_ec);
+    env->DeleteLocalRef(k_ec);
+    env->DeleteLocalRef(v_ec);
 
     aria2_gid_t* followed_by = nullptr;
     size_t followed_count = 0;
@@ -683,22 +807,38 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       }
       if (followed_by != nullptr) aria2_free(followed_by);
     }
-    HashMapPut(env, map, NewString(env, "followedBy"), followed_list);
+    jobject k_fb = NewString(env, "followedBy");
+    HashMapPut(env, map, k_fb, followed_list);
+    env->DeleteLocalRef(k_fb);
     env->DeleteLocalRef(followed_list);
 
-    HashMapPut(env, map, NewString(env, "following"),
-               NewString(env, flutter_aria2::common::GidToHex(
-                                   aria2_download_handle_get_following(dh))));
-    HashMapPut(env, map, NewString(env, "belongsTo"),
-               NewString(env, flutter_aria2::common::GidToHex(
-                                   aria2_download_handle_get_belongs_to(dh))));
+    jobject k_following = NewString(env, "following");
+    jobject v_following = NewString(env, flutter_aria2::common::GidToHex(
+                                            aria2_download_handle_get_following(dh)));
+    HashMapPut(env, map, k_following, v_following);
+    env->DeleteLocalRef(k_following);
+    env->DeleteLocalRef(v_following);
+
+    jobject k_belongs = NewString(env, "belongsTo");
+    jobject v_belongs = NewString(env, flutter_aria2::common::GidToHex(
+                                          aria2_download_handle_get_belongs_to(dh)));
+    HashMapPut(env, map, k_belongs, v_belongs);
+    env->DeleteLocalRef(k_belongs);
+    env->DeleteLocalRef(v_belongs);
 
     char* dir = aria2_download_handle_get_dir(dh);
-    HashMapPut(env, map, NewString(env, "dir"), NewString(env, dir == nullptr ? "" : dir));
+    jobject k_dir = NewString(env, "dir");
+    jobject v_dir = NewString(env, dir == nullptr ? "" : dir);
+    HashMapPut(env, map, k_dir, v_dir);
+    env->DeleteLocalRef(k_dir);
+    env->DeleteLocalRef(v_dir);
     if (dir != nullptr) aria2_free(dir);
 
-    HashMapPut(env, map, NewString(env, "numFiles"),
-               NewInteger(env, aria2_download_handle_get_num_files(dh)));
+    jobject k_nf = NewString(env, "numFiles");
+    jobject v_nf = NewInteger(env, aria2_download_handle_get_num_files(dh));
+    HashMapPut(env, map, k_nf, v_nf);
+    env->DeleteLocalRef(k_nf);
+    env->DeleteLocalRef(v_nf);
 
     aria2_delete_download_handle(dh);
     return map;
@@ -767,9 +907,11 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
     jobject map = NewHashMap(env);
     if (ret == 0 && options != nullptr) {
       for (size_t i = 0; i < count; ++i) {
-        HashMapPut(env, map,
-                   NewString(env, options[i].key == nullptr ? "" : options[i].key),
-                   NewString(env, options[i].value == nullptr ? "" : options[i].value));
+        jobject k = NewString(env, options[i].key == nullptr ? "" : options[i].key);
+        jobject v = NewString(env, options[i].value == nullptr ? "" : options[i].value);
+        HashMapPut(env, map, k, v);
+        env->DeleteLocalRef(k);
+        env->DeleteLocalRef(v);
       }
       aria2_free_key_vals(options, count);
     }
@@ -803,16 +945,34 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
       ArrayListAdd(env, announce_list, tier);
       env->DeleteLocalRef(tier);
     }
-    HashMapPut(env, map, NewString(env, "announceList"), announce_list);
-    HashMapPut(env, map, NewString(env, "comment"),
-               NewString(env, meta.comment == nullptr ? "" : meta.comment));
-    HashMapPut(env, map, NewString(env, "creationDate"),
-               NewLong(env, static_cast<int64_t>(meta.creation_date)));
-    HashMapPut(env, map, NewString(env, "mode"),
-               NewInteger(env, static_cast<int>(meta.mode)));
-    HashMapPut(env, map, NewString(env, "name"),
-               NewString(env, meta.name == nullptr ? "" : meta.name));
+    jobject k_al = NewString(env, "announceList");
+    HashMapPut(env, map, k_al, announce_list);
+    env->DeleteLocalRef(k_al);
     env->DeleteLocalRef(announce_list);
+
+    jobject k_c = NewString(env, "comment");
+    jobject v_c = NewString(env, meta.comment == nullptr ? "" : meta.comment);
+    HashMapPut(env, map, k_c, v_c);
+    env->DeleteLocalRef(k_c);
+    env->DeleteLocalRef(v_c);
+
+    jobject k_cd = NewString(env, "creationDate");
+    jobject v_cd = NewLong(env, static_cast<int64_t>(meta.creation_date));
+    HashMapPut(env, map, k_cd, v_cd);
+    env->DeleteLocalRef(k_cd);
+    env->DeleteLocalRef(v_cd);
+
+    jobject k_m = NewString(env, "mode");
+    jobject v_m = NewInteger(env, static_cast<int>(meta.mode));
+    HashMapPut(env, map, k_m, v_m);
+    env->DeleteLocalRef(k_m);
+    env->DeleteLocalRef(v_m);
+
+    jobject k_n = NewString(env, "name");
+    jobject v_n = NewString(env, meta.name == nullptr ? "" : meta.name);
+    HashMapPut(env, map, k_n, v_n);
+    env->DeleteLocalRef(k_n);
+    env->DeleteLocalRef(v_n);
 
     aria2_free_bt_meta_info_data(&meta);
     aria2_delete_download_handle(dh);

@@ -212,15 +212,16 @@ static int DownloadEventCallback(aria2_session_t* /*session*/,
                                  aria2_download_event_t event,
                                  aria2_gid_t gid,
                                  void* user_data) {
-  auto* native = (__bridge FlutterAria2Native*)user_data;
-  if (native == nil) {
+  __weak FlutterAria2Native* weakNative = (__bridge __weak FlutterAria2Native*)user_data;
+  if (weakNative == nil) {
     return 0;
   }
 
   NSString* gidHex = [NSString
       stringWithUTF8String:flutter_aria2::common::GidToHex(gid).c_str()];
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (native.onDownloadEvent == nil) {
+    FlutterAria2Native* native = weakNative;
+    if (native == nil || native.onDownloadEvent == nil) {
       return;
     }
     native.onDownloadEvent(static_cast<NSInteger>(event), gidHex);
