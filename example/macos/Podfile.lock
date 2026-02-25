@@ -20,7 +20,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   file_picker: 7584aae6fa07a041af2b36a2655122d42f578c1a
-  flutter_aria2: 394e9c0856fce8a9fd08877ccd047f2dfe70c525
+  flutter_aria2: fed3ec846e9885ffcb8ac510a2d5edaf6fb5b721
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009

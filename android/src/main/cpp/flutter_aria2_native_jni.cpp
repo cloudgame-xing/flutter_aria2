@@ -261,6 +261,31 @@ void ThrowAria2Error(JNIEnv* env, const std::string& code,
   env->DeleteLocalRef(ex);
 }
 
+#define REQUIRE_SESSION() \
+  do { \
+    if (const char* _err = flutter_aria2::core::RequireSession(state)) { \
+      ThrowAria2Error(env, _err, "No active session"); \
+      return nullptr; \
+    } \
+  } while (0)
+
+#define REQUIRE_INITIALIZED() \
+  do { \
+    if (const char* _err = flutter_aria2::core::RequireInitialized(state)) { \
+      ThrowAria2Error(env, _err, "Call libraryInit() before sessionNew()"); \
+      return nullptr; \
+    } \
+  } while (0)
+
+#define REQUIRE_NO_SESSION() \
+  do { \
+    if (const char* _err = flutter_aria2::core::RequireNoSession(state)) { \
+      ThrowAria2Error(env, _err, \
+          "Session already exists. Call sessionFinal() first."); \
+      return nullptr; \
+    } \
+  } while (0)
+
 void EmitDownloadEvent(aria2_download_event_t event, const std::string& gid) {
   if (g_vm == nullptr) return;
   JNIEnv* env = nullptr;
@@ -342,16 +367,8 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "sessionNew") {
-    if (!state->library_initialized) {
-      ThrowAria2Error(env, "NOT_INITIALIZED",
-                      "Call libraryInit() before sessionNew()");
-      return nullptr;
-    }
-    if (state->session != nullptr) {
-      ThrowAria2Error(env, "SESSION_EXISTS",
-                      "Session already exists. Call sessionFinal() first.");
-      return nullptr;
-    }
+    REQUIRE_INITIALIZED();
+    REQUIRE_NO_SESSION();
     auto options = OptionsFromArgs(env, args, "options");
     bool keep_running = MapGetBool(env, args, "keepRunning", true);
 
@@ -366,28 +383,19 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "sessionFinal") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     int ret = 0;
     flutter_aria2::core::SessionFinal(state, &ret);
     return NewInteger(env, ret);
   }
 
   if (method == "run") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     return NewInteger(env, flutter_aria2::core::RunOnce(state));
   }
 
   if (method == "startRunLoop") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     flutter_aria2::core::StartRunLoop(state);
     return nullptr;
   }
@@ -398,10 +406,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "shutdown") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     int force = MapGetBool(env, args, "force", false) ? 1 : 0;
     int ret = 0;
     flutter_aria2::core::Shutdown(state, force != 0, &ret);
@@ -409,10 +414,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "addUri") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     jobject uris_list = MapGetList(env, args, "uris");
     if (uris_list == nullptr) {
       ThrowAria2Error(env, "BAD_ARGS", "Missing 'uris'");
@@ -438,10 +440,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "addTorrent") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string torrent_file = MapGetString(env, args, "torrentFile");
     jobject ws_list = MapGetList(env, args, "webseedUris");
     auto webseeds = JavaListToStringVector(env, ws_list);
@@ -472,10 +471,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "addMetalink") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string metalink_file = MapGetString(env, args, "metalinkFile");
     auto options = OptionsFromArgs(env, args, "options");
     int position = MapGetInt(env, args, "position", -1);
@@ -503,10 +499,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getActiveDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     aria2_gid_t* gids = nullptr;
     size_t gids_count = 0;
     int ret = aria2_get_active_download(state->session, &gids, &gids_count);
@@ -529,10 +522,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "removeDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     bool force = MapGetBool(env, args, "force", false);
     int ret = aria2_remove_download(state->session, aria2_hex_to_gid(hex.c_str()),
@@ -541,10 +531,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "pauseDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     bool force = MapGetBool(env, args, "force", false);
     int ret = aria2_pause_download(state->session, aria2_hex_to_gid(hex.c_str()),
@@ -553,20 +540,14 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "unpauseDownload") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     int ret = aria2_unpause_download(state->session, aria2_hex_to_gid(hex.c_str()));
     return NewInteger(env, ret);
   }
 
   if (method == "changePosition") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     int pos = MapGetInt(env, args, "pos", 0);
     int how = MapGetInt(env, args, "how", 0);
@@ -577,10 +558,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "changeOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     auto options = OptionsFromArgs(env, args, "options");
     int ret = aria2_change_option(state->session, aria2_hex_to_gid(hex.c_str()),
@@ -589,10 +567,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getGlobalOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string name = MapGetString(env, args, "name");
     char* value = aria2_get_global_option(state->session, name.c_str());
     if (value == nullptr) return nullptr;
@@ -602,10 +577,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getGlobalOptions") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     aria2_key_val_t* options = nullptr;
     size_t count = 0;
     int ret = aria2_get_global_options(state->session, &options, &count);
@@ -626,10 +598,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "changeGlobalOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     auto options = OptionsFromArgs(env, args, "options");
     int ret = aria2_change_global_option(state->session, options.data(),
                                          options.count());
@@ -637,10 +606,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getGlobalStat") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     aria2_global_stat_t stat = aria2_get_global_stat(state->session);
     jobject map = NewHashMap(env);
     HashMapPut(env, map, NewString(env, "downloadSpeed"),
@@ -657,10 +623,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadInfo") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -742,10 +705,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadFiles") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -772,10 +732,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadOption") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     std::string name = MapGetString(env, args, "name");
     aria2_download_handle_t* dh =
@@ -794,10 +751,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadOptions") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));
@@ -824,10 +778,7 @@ jobject InvokeNative(JNIEnv* env, Aria2State* state, const std::string& method,
   }
 
   if (method == "getDownloadBtMetaInfo") {
-    if (state->session == nullptr) {
-      ThrowAria2Error(env, "NO_SESSION", "No active session");
-      return nullptr;
-    }
+    REQUIRE_SESSION();
     std::string hex = MapGetString(env, args, "gid");
     aria2_download_handle_t* dh =
         aria2_get_download_handle(state->session, aria2_hex_to_gid(hex.c_str()));

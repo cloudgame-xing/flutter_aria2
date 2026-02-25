@@ -15,6 +15,33 @@ struct RuntimeState {
   std::thread run_thread;
   std::atomic<bool> run_loop_active{false};
   std::atomic<bool> run_in_progress{false};
+
+  RuntimeState() = default;
+
+  RuntimeState(RuntimeState&& other) noexcept
+      : session(other.session),
+        library_initialized(other.library_initialized),
+        run_thread(std::move(other.run_thread)),
+        run_loop_active(other.run_loop_active.load()),
+        run_in_progress(other.run_in_progress.load()) {
+    other.session = nullptr;
+    other.library_initialized = false;
+  }
+
+  RuntimeState& operator=(RuntimeState&& other) noexcept {
+    if (this == &other) return *this;
+    session = other.session;
+    library_initialized = other.library_initialized;
+    run_thread = std::move(other.run_thread);
+    run_loop_active.store(other.run_loop_active.load());
+    run_in_progress.store(other.run_in_progress.load());
+    other.session = nullptr;
+    other.library_initialized = false;
+    return *this;
+  }
+
+  RuntimeState(const RuntimeState&) = delete;
+  RuntimeState& operator=(const RuntimeState&) = delete;
 };
 
 using DownloadEventCallback =
@@ -40,6 +67,11 @@ const char* Shutdown(RuntimeState* state, bool force, int* out_ret);
 
 void WaitForPendingRun(RuntimeState* state);
 void CleanupState(RuntimeState* state);
+
+// ─── State checks (return error code string or nullptr if OK) ───
+const char* RequireSession(const RuntimeState* state);
+const char* RequireInitialized(const RuntimeState* state);
+const char* RequireNoSession(const RuntimeState* state);
 
 }  // namespace flutter_aria2::core
 

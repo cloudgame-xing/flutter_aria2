@@ -173,4 +173,28 @@ void CleanupState(RuntimeState* state) {
   }
 }
 
+const char* RequireSession(const RuntimeState* state) {
+  if (state == nullptr || state->session == nullptr) {
+    return "NO_SESSION";
+  }
+  return nullptr;
+}
+
+const char* RequireInitialized(const RuntimeState* state) {
+  if (state == nullptr || !state->library_initialized) {
+    return "NOT_INITIALIZED";
+  }
+  return nullptr;
+}
+
+const char* RequireNoSession(const RuntimeState* state) {
+  if (state == nullptr) {
+    return "INVALID_STATE";
+  }
+  if (state->session != nullptr) {
+    return "SESSION_EXISTS";
+  }
+  return nullptr;
+}
+
 }  // namespace flutter_aria2::core

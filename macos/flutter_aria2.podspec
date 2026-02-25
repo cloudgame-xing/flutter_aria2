@@ -14,7 +14,7 @@ A new Flutter plugin project.
   s.author           = { 'Your Company' => 'email@example.com' }
 
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*.{h,m,mm,swift}', '../common/aria2_core.cpp', '../common/aria2_core.h', '../common/aria2_helpers.cpp', '../common/aria2_helpers.h'
+  s.source_files     = 'Classes/**/*.{h,m,mm,swift,cpp}'
   s.preserve_paths   = 'aria2lib/**/*'
   s.vendored_libraries = 'aria2lib/Release/lib/libaria2_c_api.dylib'
 
@@ -30,17 +30,18 @@ A new Flutter plugin project.
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
+    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
     'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/Release/lib"',
     'OTHER_LDFLAGS' => '$(inherited) -laria2_c_api',
   }
   s.swift_version = '5.0'
 
-  s.script_phase = {
-    :name => 'Sync aria2 deps',
-    :execution_position => :before_compile,
-    :shell_path => '/bin/sh',
-    :script => <<-SCRIPT
+  s.script_phases = [
+    {
+      :name => 'Sync aria2 deps',
+      :execution_position => :before_compile,
+      :shell_path => '/bin/sh',
+      :script => <<-SCRIPT
 set -euo pipefail
 
 ARCH_NAME="${ARCHS%% *}"
@@ -60,6 +61,7 @@ else
 fi
 
 "${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos "${ARCH_ARG}" 0.1.1
-    SCRIPT
-  }
+      SCRIPT
+    },
+  ]
 end
