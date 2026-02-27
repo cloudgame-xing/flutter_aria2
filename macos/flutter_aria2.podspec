@@ -16,7 +16,7 @@ A new Flutter plugin project.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*.{h,m,mm,swift,cpp}'
   s.preserve_paths   = 'aria2lib/**/*'
-  s.vendored_libraries = 'aria2lib/universal/Release/lib/libaria2_c_api.dylib'
+  s.vendored_libraries = 'aria2lib/current/Release/lib/libaria2_c_api.dylib'
 
   # If your plugin requires a privacy manifest, for example if it collects user
   # data, update the PrivacyInfo.xcprivacy file to describe your plugin's
@@ -30,8 +30,8 @@ A new Flutter plugin project.
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/universal/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/universal/Release/include"',
-    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/universal/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/universal/Release/lib"',
+    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/current/Release/include"',
+    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/current/Release/lib"',
     'OTHER_LDFLAGS' => '$(inherited) -laria2_c_api',
   }
   s.swift_version = '5.0'
@@ -44,6 +44,17 @@ A new Flutter plugin project.
       :script => <<-SCRIPT
 set -euo pipefail
 
+# 与 FLUTTER_XCODE_ARCHS 一致：仅同步当前架构，不生成 fat 包
+ARCH_NAME="${ARCHS%% *}"
+if [ "${ARCH_NAME}" = "arm64" ]; then
+  ARCH_ARG="arm64"
+elif [ "${ARCH_NAME}" = "x86_64" ]; then
+  ARCH_ARG="x64"
+else
+  echo "error: unsupported ARCHS=${ARCHS}; set FLUTTER_XCODE_ARCHS=arm64 or x86_64"
+  exit 1
+fi
+
 if command -v dart >/dev/null 2>&1; then
   DART_BIN="dart"
 elif [ -n "${FLUTTER_ROOT:-}" ] && [ -x "${FLUTTER_ROOT}/bin/dart" ]; then
@@ -53,20 +64,11 @@ else
   exit 1
 fi
 
-# 同步 arm64 与 x64，再打成 universal dylib，避免单 arch 时链接错误
-"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos arm64 0.1.2
-"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos x64 0.1.2
+"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos "${ARCH_ARG}" 0.1.2
 
 cd "${PODS_TARGET_SRCROOT}"
-mkdir -p aria2lib/universal/Debug/lib aria2lib/universal/Release/lib
-lipo -create -output aria2lib/universal/Debug/lib/libaria2_c_api.dylib \
-  aria2lib/arm64/Debug/lib/libaria2_c_api.dylib \
-  aria2lib/x64/Debug/lib/libaria2_c_api.dylib
-lipo -create -output aria2lib/universal/Release/lib/libaria2_c_api.dylib \
-  aria2lib/arm64/Release/lib/libaria2_c_api.dylib \
-  aria2lib/x64/Release/lib/libaria2_c_api.dylib
-cp -R aria2lib/arm64/Debug/include aria2lib/universal/Debug/
-cp -R aria2lib/arm64/Release/include aria2lib/universal/Release/
+rm -f aria2lib/current
+ln -s "${ARCH_ARG}" aria2lib/current
       SCRIPT
     },
   ]
