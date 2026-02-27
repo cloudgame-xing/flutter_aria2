@@ -100,7 +100,7 @@ jobs:
           cd example && flutter pub get
 
       - name: Build Linux (ARM64)
-        run: cd example && flutter build linux --release
+        run: cd example && flutter build linux --release -v
 
       - name: Zip Linux ARM64 artifact
         run: |
