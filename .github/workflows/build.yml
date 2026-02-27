@@ -1,0 +1,199 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:   # 在 Actions 页可手动运行，用于任意分支验证
+
+env:
+  FLUTTER_CHANNEL: stable
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: Get dependencies
+        run: |
+          flutter pub get
+          cd example && flutter pub get
+
+      - name: Build Windows
+        run: cd example && flutter build windows --release
+
+      - name: Zip Windows artifact
+        run: |
+          Compress-Archive -Path example\build\windows\x64\runner\Release\* -DestinationPath flutter_aria2_example-windows-x64.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter_aria2_example-windows-x64
+          path: flutter_aria2_example-windows-x64.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: Get dependencies
+        run: |
+          flutter pub get
+          cd example && flutter pub get
+
+      - name: Build Linux
+        run: cd example && flutter build linux --release
+
+      - name: Zip Linux artifact
+        run: |
+          cd example/build/linux/x64/release/bundle && zip -r ../../../../../flutter_aria2_example-linux-x64.zip . && cd -
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter_aria2_example-linux-x64
+          path: flutter_aria2_example-linux-x64.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: Get dependencies
+        run: |
+          flutter pub get
+          cd example && flutter pub get
+
+      - name: Build macOS
+        run: cd example && flutter build macos --release
+
+      - name: Zip macOS artifact
+        run: |
+          cd example/build/macos/Build/Products/Release
+          zip -r "$GITHUB_WORKSPACE/flutter_aria2_example-macos.zip" *.app
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter_aria2_example-macos
+          path: flutter_aria2_example-macos.zip
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: Get dependencies
+        run: |
+          flutter pub get
+          cd example && flutter pub get
+
+      - name: Build Android APK
+        run: cd example && flutter build apk --release
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter_aria2_example-android
+          path: example/build/app/outputs/flutter-apk/app-release.apk
+
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      - name: Get dependencies
+        run: |
+          flutter pub get
+          cd example && flutter pub get
+
+      - name: Build iOS (no codesign)
+        run: cd example && flutter build ios --release --no-codesign
+
+      - name: Zip iOS artifact
+        run: |
+          cd example/build/ios/iphoneos && zip -r ../../../../flutter_aria2_example-ios.zip Runner.app && cd -
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter_aria2_example-ios
+          path: flutter_aria2_example-ios.zip
+
+  release:
+    needs: [build-windows, build-linux, build-macos, build-android, build-ios]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release_assets
+          mv artifacts/flutter_aria2_example-windows-x64/flutter_aria2_example-windows-x64.zip release_assets/
+          mv artifacts/flutter_aria2_example-linux-x64/flutter_aria2_example-linux-x64.zip release_assets/
+          mv artifacts/flutter_aria2_example-macos/flutter_aria2_example-macos.zip release_assets/
+          mv artifacts/flutter_aria2_example-android/app-release.apk release_assets/flutter_aria2_example-android.apk
+          mv artifacts/flutter_aria2_example-ios/flutter_aria2_example-ios.zip release_assets/
+          ls -la release_assets/
+
+      - name: Create Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_assets/*
+          generate_release_notes: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
