@@ -5,10 +5,12 @@
 
 #include <string>
 
-namespace flutter_aria2::common {
+namespace flutter_aria2 {
+namespace common {
 
 std::string GidToHex(aria2_gid_t gid);
 
-}  // namespace flutter_aria2::common
+}  // namespace common
+}  // namespace flutter_aria2
 
 #endif  // FLUTTER_ARIA2_COMMON_ARIA2_HELPERS_H_

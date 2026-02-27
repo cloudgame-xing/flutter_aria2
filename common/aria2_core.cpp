@@ -3,7 +3,8 @@
 #include <chrono>
 #include <thread>
 
-namespace flutter_aria2::core {
+namespace flutter_aria2 {
+namespace core {
 
 namespace {
 struct RunInProgressGuard {
@@ -200,4 +201,5 @@ const char* RequireNoSession(const RuntimeState* state) {
   return nullptr;
 }
 
-}  // namespace flutter_aria2::core
+}  // namespace core
+}  // namespace flutter_aria2

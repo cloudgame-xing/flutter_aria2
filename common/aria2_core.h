@@ -7,7 +7,8 @@
 #include <cstddef>
 #include <thread>
 
-namespace flutter_aria2::core {
+namespace flutter_aria2 {
+namespace core {
 
 struct RuntimeState {
   aria2_session_t* session = nullptr;
@@ -73,6 +74,7 @@ const char* RequireSession(const RuntimeState* state);
 const char* RequireInitialized(const RuntimeState* state);
 const char* RequireNoSession(const RuntimeState* state);
 
-}  // namespace flutter_aria2::core
+}  // namespace core
+}  // namespace flutter_aria2
 
 #endif  // FLUTTER_ARIA2_COMMON_ARIA2_CORE_H_
