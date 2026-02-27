@@ -8,7 +8,7 @@ set(PROJECT_NAME "flutter_aria2")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
 execute_process(
-  COMMAND dart run build_tool/sync_deps.dart linux x64 0.1.1
+  COMMAND dart run build_tool/sync_deps.dart linux x64 0.1.2
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
   RESULT_VARIABLE SYNC_DEPS_RESULT
 )

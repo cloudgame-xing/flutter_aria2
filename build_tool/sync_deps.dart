@@ -20,6 +20,7 @@ Future<void> syncDeps(String platform, String arch, String version) async {
   final projectRoot = scriptDir.parent.resolveSymbolicLinksSync();
 
   // 需要检查的文件列表（相对于项目根目录）
+  // Android 按 arch 分目录存放，支持 arm64 与 x64 并存
   final requiredFiles = switch (platform) {
     'windows' => [
       'windows/aria2lib/Debug/include/aria2_c_api.h',
@@ -42,10 +43,10 @@ Future<void> syncDeps(String platform, String arch, String version) async {
       'macos/aria2lib/Release/lib/libaria2_c_api.dylib',
     ],
     'android' => [
-      'android/aria2lib/Debug/include/aria2_c_api.h',
-      'android/aria2lib/Debug/lib/libaria2_c_api.so',
-      'android/aria2lib/Release/include/aria2_c_api.h',
-      'android/aria2lib/Release/lib/libaria2_c_api.so',
+      'android/aria2lib-$arch/Debug/include/aria2_c_api.h',
+      'android/aria2lib-$arch/Debug/lib/libaria2_c_api.so',
+      'android/aria2lib-$arch/Release/include/aria2_c_api.h',
+      'android/aria2lib-$arch/Release/lib/libaria2_c_api.so',
     ],
     'ios' => [
       'ios/aria2lib/Debug/include/aria2_c_api.h',
@@ -71,14 +72,20 @@ Future<void> syncDeps(String platform, String arch, String version) async {
   }
   print('Downloading...');
 
-  final filename = platform == 'windows'
-      ? 'aria2_c_api-win-$arch-v$version.tar.gz'
-      : 'aria2_c_api-$platform-$arch-v$version.tar.gz';
+  final filename = 'aria2_c_api-$platform-$arch-v$version.tar.gz';
   final url =
       'https://github.com/cloudgame-xing/aria2lib/releases/download/v$version/$filename';
   final tarGzFile = File('${scriptDir.path}/$filename');
   final aria2libDir = Directory('${projectRoot}/$platform');
   aria2libDir.createSync(recursive: true);
+
+  // Android 按 arch 解压到 aria2lib-arm64 / aria2lib-x64，便于多 ABI 并存
+  final extractDir = platform == 'android'
+      ? Directory('${projectRoot}/$platform/aria2lib-$arch')
+      : aria2libDir;
+  if (platform == 'android') {
+    extractDir.createSync(recursive: true);
+  }
 
   // 使用 Dart HttpClient 下载文件
   final client = HttpClient();
@@ -114,16 +121,46 @@ Future<void> syncDeps(String platform, String arch, String version) async {
     client.close();
   }
 
-  // 解压到 windows 目录
-  final extractResult = Process.runSync('tar', [
-    '-xzf',
-    tarGzFile.path,
-    '-C',
-    aria2libDir.path,
-  ]);
-  if (extractResult.exitCode != 0) {
-    stderr.writeln('Failed to extract: ${extractResult.stderr}');
-    exit(1);
+  // 解压：Android 的 tarball 内含顶层 aria2lib/，需先解压到临时目录再挪到 aria2lib-arch
+  if (platform == 'android') {
+    final tempDir = Directory('${scriptDir.path}/.aria2_extract_$arch');
+    try {
+      tempDir.createSync(recursive: true);
+      final extractResult = Process.runSync('tar', [
+        '-xzf',
+        tarGzFile.path,
+        '-C',
+        tempDir.path,
+      ]);
+      if (extractResult.exitCode != 0) {
+        stderr.writeln('Failed to extract: ${extractResult.stderr}');
+        exit(1);
+      }
+      final srcAria2 = Directory('${tempDir.path}/aria2lib');
+      if (!srcAria2.existsSync()) {
+        stderr.writeln('Expected aria2lib/ inside tarball.');
+        exit(1);
+      }
+      if (extractDir.existsSync()) {
+        extractDir.deleteSync(recursive: true);
+      }
+      srcAria2.renameSync(extractDir.path);
+    } finally {
+      if (tempDir.existsSync()) {
+        tempDir.deleteSync(recursive: true);
+      }
+    }
+  } else {
+    final extractResult = Process.runSync('tar', [
+      '-xzf',
+      tarGzFile.path,
+      '-C',
+      aria2libDir.path,
+    ]);
+    if (extractResult.exitCode != 0) {
+      stderr.writeln('Failed to extract: ${extractResult.stderr}');
+      exit(1);
+    }
   }
   print('Extraction completed.');
 

@@ -4,12 +4,16 @@ project(flutter_aria2_native LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-  message(FATAL_ERROR "Only arm64-v8a is supported. Current ABI: ${CMAKE_ANDROID_ARCH_ABI}")
+if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+  set(SYNC_ARCH "arm64")
+elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+  set(SYNC_ARCH "x64")
+else()
+  message(FATAL_ERROR "Only arm64-v8a and x86_64 are supported. Current ABI: ${CMAKE_ANDROID_ARCH_ABI}")
 endif()
 
 execute_process(
-  COMMAND dart run build_tool/sync_deps.dart android arm64 0.1.1
+  COMMAND dart run build_tool/sync_deps.dart android ${SYNC_ARCH} 0.1.2
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
   RESULT_VARIABLE SYNC_DEPS_RESULT
 )
@@ -23,7 +27,7 @@ else()
   set(ARIA2_VARIANT "Release")
 endif()
 
-set(ARIA2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${ARIA2_VARIANT}")
+set(ARIA2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib-${SYNC_ARCH}/${ARIA2_VARIANT}")
 set(ARIA2_INCLUDE_DIR "${ARIA2_ROOT}/include")
 
 set(ARIA2_LIB_FILE "")
