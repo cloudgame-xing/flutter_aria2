@@ -97,7 +97,8 @@ jobs:
 
       - name: Zip macOS artifact
         run: |
-          cd example/build/macos/Build/Products/Release && zip -r ../../../../../flutter_aria2_example-macos.zip *.app && cd -
+          cd example/build/macos/Build/Products/Release
+          zip -r "$GITHUB_WORKSPACE/flutter_aria2_example-macos.zip" *.app
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
