@@ -8,8 +8,16 @@ cmake_minimum_required(VERSION 3.14)
 set(PROJECT_NAME "flutter_aria2")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+  set(SYNC_ARCH "x64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "ARM64")
+  set(SYNC_ARCH "arm64")
+else()
+  message(FATAL_ERROR "Unsupported Windows arch: ${CMAKE_SYSTEM_PROCESSOR}. Only x64 and arm64 are supported.")
+endif()
+
 execute_process(
-  COMMAND dart.bat run build_tool/sync_deps.dart windows x64 0.1.1
+  COMMAND dart.bat run build_tool/sync_deps.dart windows ${SYNC_ARCH} 0.1.2
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
   RESULT_VARIABLE SYNC_DEPS_RESULT
 )
@@ -64,11 +72,11 @@ set_target_properties(aria2_c_api PROPERTIES
   MAP_IMPORTED_CONFIG_PROFILE         Release
   MAP_IMPORTED_CONFIG_RELWITHDEBINFO  Release
   MAP_IMPORTED_CONFIG_MINSIZEREL      Release
-  INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/include"
-  IMPORTED_IMPLIB_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Debug/lib/libaria2_c_api.dll.a"
-  IMPORTED_IMPLIB_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/lib/libaria2_c_api.dll.a"
-  IMPORTED_LOCATION_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Debug/bin/libaria2_c_api.dll"
-  IMPORTED_LOCATION_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/Release/bin/libaria2_c_api.dll"
+  INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${SYNC_ARCH}/Release/include"
+  IMPORTED_IMPLIB_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${SYNC_ARCH}/Debug/lib/libaria2_c_api.dll.a"
+  IMPORTED_IMPLIB_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${SYNC_ARCH}/Release/lib/libaria2_c_api.dll.a"
+  IMPORTED_LOCATION_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${SYNC_ARCH}/Debug/bin/libaria2_c_api.dll"
+  IMPORTED_LOCATION_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${SYNC_ARCH}/Release/bin/libaria2_c_api.dll"
 )
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE aria2_c_api)

@@ -16,7 +16,7 @@ A new Flutter plugin project.
   s.source_files     = 'Classes/**/*.{h,m,mm,swift,cpp}'
   s.public_header_files = 'Classes/**/*.h'
   s.preserve_paths   = 'aria2lib/**/*'
-  s.vendored_libraries = 'aria2lib/Release/lib/libaria2_c_api.dylib'
+  s.vendored_libraries = 'aria2lib/current/Release/lib/libaria2_c_api.dylib'
   s.dependency 'Flutter'
   s.platform = :ios, '13.0'
 
@@ -25,8 +25,8 @@ A new Flutter plugin project.
     'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
-    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/Release/lib"',
+    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/current/Release/include"',
+    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/current/Release/lib"',
     'OTHER_LDFLAGS' => '$(inherited) -laria2_c_api',
     'LD_RUNPATH_SEARCH_PATHS' => '$(inherited) @loader_path @loader_path/Frameworks @executable_path/Frameworks',
   }
@@ -61,7 +61,11 @@ else
   exit 1
 fi
 
-"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" ios "${ARCH_ARG}" 0.1.1
+"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" ios "${ARCH_ARG}" 0.1.2
+
+cd "${PODS_TARGET_SRCROOT}"
+rm -f aria2lib/current
+ln -s "${ARCH_ARG}" aria2lib/current
       SCRIPT
     },
     {
@@ -72,9 +76,9 @@ fi
 set -euo pipefail
 
 if [ "${CONFIGURATION}" = "Debug" ]; then
-  LIB_SRC="${PODS_TARGET_SRCROOT}/aria2lib/Debug/lib/libaria2_c_api.dylib"
+  LIB_SRC="${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/lib/libaria2_c_api.dylib"
 else
-  LIB_SRC="${PODS_TARGET_SRCROOT}/aria2lib/Release/lib/libaria2_c_api.dylib"
+  LIB_SRC="${PODS_TARGET_SRCROOT}/aria2lib/current/Release/lib/libaria2_c_api.dylib"
 fi
 
 if [ ! -f "${LIB_SRC}" ]; then
