@@ -2,11 +2,12 @@ name: Build and Release
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
     tags:
       - 'v*'
   pull_request:
-    branches: [main, master]
+    branches: [main]
+  workflow_dispatch:   # 在 Actions 页可手动运行，用于任意分支验证
 
 env:
   FLUTTER_CHANNEL: stable
