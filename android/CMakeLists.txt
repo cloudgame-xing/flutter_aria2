@@ -27,7 +27,7 @@ else()
   set(ARIA2_VARIANT "Release")
 endif()
 
-set(ARIA2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib-${SYNC_ARCH}/${ARIA2_VARIANT}")
+set(ARIA2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/aria2lib/${SYNC_ARCH}/${ARIA2_VARIANT}")
 set(ARIA2_INCLUDE_DIR "${ARIA2_ROOT}/include")
 
 set(ARIA2_LIB_FILE "")

@@ -16,7 +16,7 @@ A new Flutter plugin project.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*.{h,m,mm,swift,cpp}'
   s.preserve_paths   = 'aria2lib/**/*'
-  s.vendored_libraries = 'aria2lib/Release/lib/libaria2_c_api.dylib'
+  s.vendored_libraries = 'aria2lib/current/Release/lib/libaria2_c_api.dylib'
 
   # If your plugin requires a privacy manifest, for example if it collects user
   # data, update the PrivacyInfo.xcprivacy file to describe your plugin's
@@ -30,8 +30,8 @@ A new Flutter plugin project.
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/Release/include"',
-    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/Release/lib"',
+    'HEADER_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/../common" "${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/include" "${PODS_TARGET_SRCROOT}/aria2lib/current/Release/include"',
+    'LIBRARY_SEARCH_PATHS' => '$(inherited) "${PODS_TARGET_SRCROOT}/aria2lib/current/Debug/lib" "${PODS_TARGET_SRCROOT}/aria2lib/current/Release/lib"',
     'OTHER_LDFLAGS' => '$(inherited) -laria2_c_api',
   }
   s.swift_version = '5.0'
@@ -61,6 +61,10 @@ else
 fi
 
 "${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos "${ARCH_ARG}" 0.1.2
+
+cd "${PODS_TARGET_SRCROOT}"
+rm -f aria2lib/current
+ln -s "${ARCH_ARG}" aria2lib/current
       SCRIPT
     },
   ]
