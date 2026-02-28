@@ -1,6 +1,6 @@
 name: flutter_aria2
-description: "A new Flutter plugin project."
-version: 0.0.1
+description: "A Flutter plugin that embeds the aria2 download engine via its C++ API."
+version: 0.1.1
 homepage:
 
 environment:
