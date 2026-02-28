@@ -1,7 +1,11 @@
 name: flutter_aria2
 description: "A Flutter plugin that embeds the aria2 download engine via its C++ API."
-version: 0.1.1
-homepage:
+version: 0.1.2
+homepage: https://github.com/cloudgame-xing/flutter_aria2
+repository: https://github.com/cloudgame-xing/flutter_aria2
+issue_tracker: https://github.com/cloudgame-xing/flutter_aria2/issues
+
+publish_to: xing.junjie.me
 
 environment:
   sdk: ^3.10.4
