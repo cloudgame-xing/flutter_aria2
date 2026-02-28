@@ -104,7 +104,7 @@ class Aria2Exception implements Exception {
   /// 从 [PlatformException] 构造。
   factory Aria2Exception.fromPlatform(PlatformException e) {
     return Aria2Exception(
-      code: e.code ?? 'UNKNOWN',
+      code: e.code,
       message: e.message ?? e.details?.toString() ?? 'Unknown platform error',
       platformException: e,
     );
