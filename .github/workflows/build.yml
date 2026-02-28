@@ -7,21 +7,18 @@ on:
       - 'v*'
   pull_request:
     branches: [main]
-  workflow_dispatch:   # 在 Actions 页可手动运行，用于任意分支验证
-
-env:
-  FLUTTER_CHANNEL: stable
+  workflow_dispatch:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
+          channel: stable
           cache: true
 
       - name: Get dependencies
@@ -43,7 +40,7 @@ jobs:
           path: flutter_aria2_example-windows-x64.zip
 
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +52,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
+          channel: stable
           cache: true
 
       - name: Get dependencies
@@ -77,7 +74,7 @@ jobs:
           path: flutter_aria2_example-linux-x64.zip
 
   build-linux-arm:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -91,9 +88,6 @@ jobs:
         with:
           channel: main
           cache: true
-
-      - name: Flutter doctor
-        run: flutter doctor -v
 
       - name: Get dependencies
         run: |
@@ -114,14 +108,14 @@ jobs:
           path: flutter_aria2_example-linux-arm64.zip
 
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
+          channel: stable
           cache: true
 
       - name: Get dependencies
@@ -157,7 +151,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
+          channel: stable
           cache: true
 
       - name: Get dependencies
@@ -175,14 +169,14 @@ jobs:
           path: example/build/app/outputs/flutter-apk/app-release.apk
 
   build-ios:
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
+          channel: stable
           cache: true
 
       - name: Get dependencies
@@ -206,7 +200,7 @@ jobs:
   release:
     needs: [build-windows, build-linux, build-linux-arm, build-macos, build-android, build-ios]
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
