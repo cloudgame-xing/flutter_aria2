@@ -72,6 +72,14 @@ set_target_properties(aria2_c_api PROPERTIES
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE aria2_c_api)
 
+# So that the plugin finds libaria2_c_api.so when both are in app bundle's lib/
+# (plugin is installed via install(FILES...) so it doesn't get CMAKE_INSTALL_RPATH;
+# set RPATH on the plugin so at runtime it looks in the same directory).
+set_target_properties(${PLUGIN_NAME} PROPERTIES
+  BUILD_RPATH "\$ORIGIN"
+  INSTALL_RPATH "\$ORIGIN"
+)
+
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
