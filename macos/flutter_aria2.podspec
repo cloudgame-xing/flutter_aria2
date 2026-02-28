@@ -54,8 +54,8 @@ else
 fi
 
 # 同步 arm64 与 x64，再打成 universal dylib，避免单 arch 时链接错误
-"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos arm64 0.1.2
-"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos x64 0.1.2
+"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos arm64 0.1.3
+"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" macos x64 0.1.3
 
 cd "${PODS_TARGET_SRCROOT}"
 mkdir -p aria2lib/universal/Debug/lib aria2lib/universal/Release/lib
