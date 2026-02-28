@@ -94,7 +94,7 @@ jobs:
 
       - name: Zip Linux artifact
         run: |
-          cd example/build/linux/x64/release/bundle && zip -r ../../../../../flutter_aria2_example-linux-x64.zip . && cd -
+          cd example/build/linux/x64/release/bundle && zip -r ../../../../../../flutter_aria2_example-linux-x64.zip . && cd -
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
