@@ -72,14 +72,6 @@ set_target_properties(aria2_c_api PROPERTIES
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE aria2_c_api)
 
-# 当使用 snap 安装的 Flutter 在 Linux arm64 上构建时，其自带的 ld 可能使用较旧的
-# glibc，无法解析预编译 libaria2_c_api.so 所需的 GLIBC_2.32–2.35。显式添加系统
-# 库路径并链接 pthread/dl，使链接器从主机系统解析这些符号。
-if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-  target_link_directories(${PLUGIN_NAME} PUBLIC /usr/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
-  target_link_libraries(${PLUGIN_NAME} PUBLIC c pthread dl)
-endif()
-
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
@@ -125,10 +117,6 @@ target_link_libraries(${TEST_RUNNER} PRIVATE flutter)
 target_link_libraries(${TEST_RUNNER} PRIVATE PkgConfig::GTK)
 target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main gmock)
 target_link_libraries(${TEST_RUNNER} PRIVATE aria2_c_api)
-if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-  target_link_directories(${TEST_RUNNER} PRIVATE /usr/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
-  target_link_libraries(${TEST_RUNNER} PRIVATE pthread dl)
-endif()
 
 # Enable automatic test discovery.
 include(GoogleTest)
