@@ -17,7 +17,7 @@ else()
 endif()
 
 execute_process(
-  COMMAND dart.bat run build_tool/sync_deps.dart windows ${SYNC_ARCH} 0.1.2
+  COMMAND dart.bat run build_tool/sync_deps.dart windows ${SYNC_ARCH} 0.1.3
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
   RESULT_VARIABLE SYNC_DEPS_RESULT
 )

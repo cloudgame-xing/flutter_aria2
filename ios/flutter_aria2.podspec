@@ -61,7 +61,7 @@ else
   exit 1
 fi
 
-"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" ios "${ARCH_ARG}" 0.1.2
+"${DART_BIN}" run "${PODS_TARGET_SRCROOT}/../build_tool/sync_deps.dart" ios "${ARCH_ARG}" 0.1.3
 
 cd "${PODS_TARGET_SRCROOT}"
 rm -f aria2lib/current

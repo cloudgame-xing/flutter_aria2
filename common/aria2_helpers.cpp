@@ -1,6 +1,7 @@
 #include "aria2_helpers.h"
 
-namespace flutter_aria2::common {
+namespace flutter_aria2 {
+namespace common {
 
 std::string GidToHex(aria2_gid_t gid) {
   char* hex = aria2_gid_to_hex(gid);
@@ -11,4 +12,5 @@ std::string GidToHex(aria2_gid_t gid) {
   return result;
 }
 
-}  // namespace flutter_aria2::common
+}  // namespace common
+}  // namespace flutter_aria2
